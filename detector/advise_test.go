@@ -7,6 +7,7 @@ package detector
 
 import (
 	"bytes"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,6 +147,160 @@ func TestAdviseEmptyAndMissing(t *testing.T) {
 	}
 	if _, err := Advise(filepath.Join(t.TempDir(), "nope.bin")); err == nil {
 		t.Error("missing path must error")
+	}
+}
+
+// Goal 43: EWF v1 containers (libewf-produced fixtures) route to the scan
+// that decodes them, with reasons naming the sniffed magic and flavor.
+func TestAdviseEWFRoutesToScan(t *testing.T) {
+	for _, tc := range []struct {
+		fixture string
+		flavor  string
+	}{
+		{"testdata/ewf-real.E01", "EnCase E01"},
+		{"testdata/ewf-real.S01", "SMART S01"},
+	} {
+		ad, err := Advise(tc.fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ad.Command != "findbtc "+tc.fixture {
+			t.Errorf("%s: command %q, want a direct scan", tc.fixture, ad.Command)
+		}
+		joined := strings.Join(ad.Reasons, "; ")
+		if !strings.Contains(joined, "EWF magic") || !strings.Contains(joined, tc.flavor) {
+			t.Errorf("%s: reasons %q must name the magic and flavor", tc.fixture, joined)
+		}
+	}
+}
+
+// Goal 43: EWF2 containers route nowhere — the reasons carry the libewf
+// conversion pointer, matching the scan refusal.
+func TestAdviseEWF2PointsToConversion(t *testing.T) {
+	ad, err := Advise("testdata/ewf-real.Ex01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ad.Command != "" {
+		t.Errorf("command %q, want none for an EWF2 image", ad.Command)
+	}
+	joined := strings.Join(ad.Reasons, "; ")
+	if !strings.Contains(joined, "EWF2") || !strings.Contains(joined, "ewfexport") {
+		t.Errorf("reasons %q must name EWF2 and the conversion", joined)
+	}
+}
+
+// Goal 43: encrypted wallet copies route to -hashes with the sniffed
+// evidence in the reasons. Each fixture is also proven actionable: the
+// routed mode finds the same record the router sniffed.
+func TestAdviseWalletCopyRoutesToHashes(t *testing.T) {
+	dir := t.TempDir()
+	mkeyPath := filepath.Join(dir, "wallet-copy.bin")
+	mkeyRaw := mustHex(t, realMKeyBDBHex)
+	if err := os.WriteFile(mkeyPath, mkeyRaw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ksPath := filepath.Join(dir, "wallet-copy.json")
+	if err := os.WriteFile(ksPath, []byte(keystoreScryptJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path     string
+		evidence string
+	}{
+		{mkeyPath, "mkey record at byte 0"},
+		{ksPath, "keystore object at byte 0"},
+	} {
+		ad, err := Advise(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ad.Command != "findbtc -hashes "+tc.path {
+			t.Errorf("%s: command %q, want -hashes", tc.path, ad.Command)
+		}
+		if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, tc.evidence) {
+			t.Errorf("%s: reasons %q must name %q", tc.path, joined, tc.evidence)
+		}
+	}
+	if len(ExtractHashes(mkeyRaw, 0)) != 1 {
+		t.Error("mkey fixture must yield one hash: the route is vacuous")
+	}
+	if len(findKeystores([]byte(keystoreScryptJSON), 0)) != 1 {
+		t.Error("keystore fixture must hold one object: the route is vacuous")
+	}
+}
+
+// Goal 43: extended-public-key files route to -watch. The reason names
+// the key label and fingerprint (descriptor-safe), never key material.
+func TestAdviseXpubFileRoutesToWatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.txt")
+	body := "# candidate 1\n" + bip44MainXPub + "\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ad, err := Advise(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ad.Command != "findbtc -watch "+path {
+		t.Errorf("command %q, want -watch", ad.Command)
+	}
+	joined := strings.Join(ad.Reasons, "; ")
+	if !strings.Contains(joined, "xpub") || !strings.Contains(joined, "6cc9f252") {
+		t.Errorf("reasons %q must name the key label and fingerprint", joined)
+	}
+	if strings.Contains(joined, bip44MainXPub) {
+		t.Error("reasons must never carry key material")
+	}
+}
+
+// Goal 43: the sniff is bounded to the first KB — a wallet record past
+// the bound keeps the raw default. Never a scan, never a run.
+func TestAdviseSniffIsBoundedToFirstKB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deep-mkey.bin")
+	pad := make([]byte, 1500)
+	raw := append(pad, mustHex(t, realMKeyBDBHex)...)
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ad, err := Advise(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ad.Command != "findbtc "+path {
+		t.Errorf("command %q, want the raw default for past-bound evidence", ad.Command)
+	}
+}
+
+// Goal 43 FP probe: random bytes and trigger-word prose keep the raw
+// default — routing runs strict validators, never substring matching.
+func TestAdviseAmbiguousStaysRaw(t *testing.T) {
+	dir := t.TempDir()
+	rnd := make([]byte, 4096)
+	rng := rand.New(rand.NewSource(43))
+	if _, err := rng.Read(rnd); err != nil {
+		t.Fatal(err)
+	}
+	rndPath := filepath.Join(dir, "random.bin")
+	if err := os.WriteFile(rndPath, rnd, 0644); err != nil {
+		t.Fatal(err)
+	}
+	prose := strings.Repeat("my mkey keystore ciphertext xpub EVF2 wallet backup password notes\n", 40)
+	prosePath := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(prosePath, []byte(prose), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{rndPath, prosePath} {
+		ad, err := Advise(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ad.Command != "findbtc "+path {
+			t.Errorf("%s: command %q, want the raw default", path, ad.Command)
+		}
+		if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, "no partition table or filesystem") {
+			t.Errorf("%s: reasons %q must explain the fallback", path, joined)
+		}
 	}
 }
 
