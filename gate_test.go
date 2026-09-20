@@ -696,6 +696,70 @@ func TestCoverageExitMatrix(t *testing.T) {
 	}
 }
 
+// The follow-up exit contract (Goal 43): -watch joins -hashes/-salvage —
+// readable-but-empty input is a completed answer (message on stdout,
+// exit 0), while missing or unreadable input exits 1. Private-only
+// -watch input stays a loud refusal (exit 1): a safety refusal is not
+// an empty result.
+func TestFollowupExitMatrix(t *testing.T) {
+	dir := t.TempDir()
+	noise := writeGateFile(t, dir, "noise.bin", "field notes without keys or wallets, just prose\n")
+	missing := filepath.Join(dir, "absent.bin")
+	cases := []struct {
+		name string
+		args []string
+		want int
+		out  string
+	}{
+		{"watch empty", []string{"-watch", noise}, 0, "No extended public keys in"},
+		{"hashes empty", []string{"-hashes", noise}, 0, "No crack material found"},
+		{"salvage empty", []string{"-salvage", noise}, 0, "No salvageable database pages"},
+		{"watch missing", []string{"-watch", missing}, 1, ""},
+		{"hashes missing", []string{"-hashes", missing}, 1, ""},
+		{"salvage missing", []string{"-salvage", missing}, 1, ""},
+	}
+	for _, c := range cases {
+		stdout, stderr, exit := runTestBinary(t, c.args...)
+		if exit != c.want {
+			t.Errorf("%s: exit %d, want %d (stderr: %s)", c.name, exit, c.want, firstLine(stderr))
+			continue
+		}
+		if c.want == 0 {
+			if !strings.Contains(stdout, c.out) {
+				t.Errorf("%s: stdout lacks %q (got: %s)", c.name, c.out, firstLine(stdout))
+			}
+			if strings.Contains(stderr, "Exiting due to error") {
+				t.Errorf("%s: empty input must not error (stderr: %s)", c.name, firstLine(stderr))
+			}
+			if strings.Contains(stdout, "Exiting due to error") {
+				t.Errorf("%s: stdout must carry the answer, not an error (got: %s)", c.name, firstLine(stdout))
+			}
+		}
+	}
+	// Private-only input stays a loud refusal, not an empty answer.
+	priv := writeGateFile(t, dir, "priv.txt",
+		"xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi\n")
+	_, stderr, exit := runTestBinary(t, "-watch", priv)
+	if exit != 1 || !strings.Contains(stderr, "private") {
+		t.Errorf("private-only watch: exit %d stderr %q, want a refusal", exit, firstLine(stderr))
+	}
+	// chmod-000 only bites on enforcing platforms; where the probe open
+	// succeeds (Windows/root) the permission case cannot run.
+	noperm := writeGateFile(t, dir, "noperm.bin", "bestblock but unreadable\n")
+	if err := os.Chmod(noperm, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(noperm, 0644) })
+	if f, err := os.Open(noperm); err == nil {
+		f.Close()
+		t.Log("platform reads chmod-000 files; permission case skipped")
+		return
+	}
+	if _, stderr, exit := runTestBinary(t, "-watch", noperm); exit != 1 {
+		t.Errorf("unreadable watch: exit %d, want 1 (stderr: %s)", exit, firstLine(stderr))
+	}
+}
+
 // writeCorruptZipRoot builds the nested-tolerance fixture: a root file
 // carrying a live needle plus a zip whose headers are intact but whose
 // member data is corrupt. The member publishes (headers parse) then
