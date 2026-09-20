@@ -1420,10 +1420,13 @@ func runWatch(path, outPath, format string, count int, endpoint string) {
 	if len(pubs) == 0 {
 		if privFound {
 			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: found only private extended keys — findbtc never derives from private material (move the key to an offline machine and sweep to a fresh wallet)\n")
-		} else {
-			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: no extended public keys in %s\n", path)
+			os.Exit(1)
 		}
-		os.Exit(1)
+		// Readable but keyless is a completed answer (exit 0), matching
+		// -hashes/-salvage: only unreadable input and safety refusals
+		// exit 1.
+		fmt.Printf("No extended public keys in %s\n", path)
+		return
 	}
 	entries, err := detector.CollectWatchAddrs(pubs, count)
 	if err != nil {

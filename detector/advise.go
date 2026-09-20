@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"runtime"
@@ -8,19 +9,28 @@ import (
 	"strings"
 )
 
-// Guided mode (Goal 27): -advise inspects a target and recommends the
-// documented-best command with reasons. It never scans content and
-// never runs anything: inspection reads at most boot sectors and
-// partition tables (Stat, OpenFS probes, ScanPartitions).
+// Guided mode (Goal 27, follow-up routing Goal 43): -advise inspects a
+// target and recommends the documented-best command with reasons. It never
+// scans content and never runs anything: inspection reads at most boot
+// sectors, partition tables (Stat, OpenFS probes, ScanPartitions), and a
+// bounded first-KB sniff for follow-up inputs (container magic, wallet
+// records, extended public keys). The sniff runs strict validators over at
+// most 1024 bytes at offset 0 — never a scan, never a run.
 //
 // Routing table (target shape → command):
 //
-//	directory            → -walk (sweep every file)
-//	volume at offset 0   → -fs (deleted entries with filenames)
-//	partitioned disk     → -fs (auto-seed, no -fs-offset needed)
-//	anything else        → raw scan (every byte, no filenames)
-//	empty / unreadable   → no command, reasons say why
+//	directory                       → -walk (sweep every file)
+//	EWF v1 container (E01/S01)      → raw scan (decodes the set directly)
+//	EWF2 container (Ex01/Lx01)      → no command (libewf conversion pointer)
+//	volume at offset 0              → -fs (deleted entries with filenames)
+//	partitioned disk                → -fs (auto-seed, no -fs-offset needed)
+//	wallet copy (mkey / keystore)   → -hashes (crack-ready hashes)
+//	extended-public-key file        → -watch (offline addresses)
+//	anything else                   → raw scan (every byte, no filenames)
+//	empty / unreadable              → no command, reasons say why
 //
+// The shape table is unchanged: ambiguous input keeps the raw-scan
+// default — a false diversion to a follow-up is worse than a raw scan.
 // Filesystem targets also get an -unallocated-only follow-up; large
 // raw targets get a -checkpoint follow-up. Follow-ups print under
 // "Also consider" and never auto-run.
@@ -35,9 +45,14 @@ type Advice struct {
 	partKind []string // probed volume kinds for tests
 }
 
+// adviseSniffMaxBytes bounds -advise content sniffing to the first KB at
+// offset 0: container magic, wallet records, and extended public keys all
+// identify from a prefix, so anything past this bound keeps the raw default.
+const adviseSniffMaxBytes = 1024
+
 // Advise inspects path and recommends the documented-best command.
-// It reads at most boot sectors and partition tables: content is
-// never scanned and nothing is run.
+// It reads at most boot sectors, partition tables, and the bounded
+// first-KB sniff: content is never scanned and nothing is run.
 func Advise(path string) (Advice, error) {
 	ad := Advice{Target: path}
 	fi, err := os.Stat(path)
@@ -52,6 +67,17 @@ func Advise(path string) (Advice, error) {
 		return ad, fmt.Errorf("cannot advise on %s: %w", path, err)
 	}
 	defer f.Close()
+	// The sniff head is read once with ReadAt so the shape probes below
+	// see an undisturbed offset. A short or failed read simply yields no
+	// sniff match and the raw default below.
+	head := make([]byte, adviseSniffMaxBytes)
+	nh, _ := f.ReadAt(head, 0)
+	head = head[:nh]
+	// Offset-0 container magic is definitive — no filesystem opens with
+	// it — so it routes before the shape probes.
+	if cad, ok := adviseContainer(path, head); ok {
+		return cad, nil
+	}
 	if kind, _, err := OpenFS(f, 0); err == nil {
 		ad.Command = fmt.Sprintf("findbtc -fs %s", shellQuote(path))
 		ad.Reasons = []string{
@@ -90,7 +116,96 @@ func Advise(path string) (Advice, error) {
 		sort.Strings(descs)
 		return adviseRaw(path, fi, fmt.Sprintf("partition table holds %d entries (%s) but none opens as a supported filesystem", len(parts), strings.Join(descs, "; ")))
 	}
+	// No shape matched: sniff the bounded head for follow-up inputs
+	// before falling back to the raw default.
+	if fad, ok := adviseFollowup(path, head); ok {
+		return fad, nil
+	}
 	return adviseRaw(path, fi, "no partition table or filesystem found")
+}
+
+// adviseContainer routes forensic containers by offset-0 magic: EWF v1
+// sets (E01/S01) scan directly, EWF2 (Ex01/Lx01) needs conversion first.
+// Anything else reports no match and the shape probes run as before.
+func adviseContainer(path string, head []byte) (Advice, bool) {
+	ad := Advice{Target: path}
+	if len(head) >= len(ewf2Signature) && bytes.Equal(head[:len(ewf2Signature)], ewf2Signature) {
+		ad.Reasons = []string{
+			fmt.Sprintf("%s is an EWF2 image (Ex01/Lx01, EVF2 magic): only EWF v1 (E01) and SMART (S01) scan directly", path),
+			fmt.Sprintf("convert first with libewf (ewfexport -u -t out -f raw %s) and scan the raw output", shellQuote(path)),
+		}
+		return ad, true
+	}
+	if len(head) >= len(ewfSignature) && bytes.Equal(head[:len(ewfSignature)], ewfSignature) {
+		ad.Command = fmt.Sprintf("findbtc %s", shellQuote(path))
+		ad.Reasons = []string{
+			fmt.Sprintf("%s starts with EWF magic (%s container): the scan decodes it directly", path, ewfFlavorName(path)),
+			"covers every decoded byte; hits lack filenames",
+		}
+		return ad, true
+	}
+	return ad, false
+}
+
+// ewfFlavorName names the container flavor from the segment extension:
+// .E01-.E99 are EnCase, .S01-.S99 are SMART. Anything else stays generic.
+func ewfFlavorName(path string) string {
+	base := path
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.LastIndexByte(base, '.'); i >= 0 {
+		ext := strings.ToUpper(base[i+1:])
+		if len(ext) == 3 && ext[1] >= '0' && ext[1] <= '9' && ext[2] >= '0' && ext[2] <= '9' {
+			switch ext[0] {
+			case 'E':
+				return "EnCase E01"
+			case 'S':
+				return "SMART S01"
+			}
+		}
+	}
+	return "EWF v1"
+}
+
+// adviseFollowup sniffs the bounded head for follow-up inputs: encrypted
+// wallet copies (a Bitcoin Core mkey record or a complete Ethereum
+// keystore object) route to -hashes, extended-public-key files to -watch.
+// Every check is a strict validator — the same one the routed mode runs —
+// so near-misses and prose fall through to the raw default.
+func adviseFollowup(path string, head []byte) (Advice, bool) {
+	ad := Advice{Target: path}
+	if mks := FindMasterKeys(head, 0); len(mks) > 0 {
+		ad.Command = fmt.Sprintf("findbtc -hashes %s", shellQuote(path))
+		ad.Reasons = []string{
+			fmt.Sprintf("%s holds a Bitcoin Core mkey record at byte %d", path, mks[0].Offset()),
+			"extract crack-ready hashes for hashcat/John (see docs/PASSWORD_RECOVERY.md)",
+		}
+		return ad, true
+	}
+	if kms := findKeystores(head, 0); len(kms) > 0 {
+		ad.Command = fmt.Sprintf("findbtc -hashes %s", shellQuote(path))
+		ad.Reasons = []string{
+			fmt.Sprintf("%s holds a complete Ethereum keystore object at byte %d", path, kms[0].startAbs),
+			"extract crack-ready hashes for hashcat/John (see docs/PASSWORD_RECOVERY.md)",
+		}
+		return ad, true
+	}
+	if pubs, _ := ExtractXpubs(head); len(pubs) > 0 {
+		// Only a key -watch itself accepts earns the route: checksum
+		// shape alone is not enough (curve, compression, depth rules).
+		for _, s := range pubs {
+			if x, err := ParseXPub(s); err == nil {
+				ad.Command = fmt.Sprintf("findbtc -watch %s", shellQuote(path))
+				ad.Reasons = []string{
+					fmt.Sprintf("%s holds a checksum-valid %s extended public key (fingerprint %s)", path, x.Label, x.Fingerprint()),
+					"derive watch-only addresses offline (see docs/WATCH_ONLY.md)",
+				}
+				return ad, true
+			}
+		}
+	}
+	return ad, false
 }
 
 // adviseDir routes directories to -walk.

@@ -139,6 +139,7 @@ to stderr, so `-json` output stays parseable. Exit codes are a contract:
 | Code | Meaning |
 | ---- | ------- |
 | 0 | The run completed and covered its target — hits or not. A `-walk` that scanned at least one file, or a multi-target run that scanned at least one target, exits 0 even when others failed (failures print loudly with a `WARNING`). |
+| 0 | Follow-up modes (`-hashes`, `-salvage`, `-tokenlist`, `-watch`, `-report`) exit 0 on readable-but-empty input (`No ... found` on stdout): a completed run with nothing found is not an error. Missing or unreadable input still exits 1. |
 | 1 | Runtime error or zero coverage: the root target could not be read (missing, unreadable, vanished mid-run), or a `-walk` / multi-target run scanned nothing at all. The reason is on stderr. |
 | 2 | Bad flags/usage. |
 | 3 | Hits found — but only with `-fail-on-hit`, which gates CI and pre-commit hooks (see [docs/SECRETS_PROFILE.md](docs/SECRETS_PROFILE.md)). |
