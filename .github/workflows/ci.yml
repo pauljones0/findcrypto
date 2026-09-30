@@ -19,9 +19,9 @@ jobs:
       - name: gofmt
         shell: bash
         run: test -z "$(gofmt -l .)"
-      - name: oracle tools (BDB and XFS cross-checks)
+      - name: oracle tools (BDB, FAT/exFAT, and XFS cross-checks)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq db5.3-util xfsprogs
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq db5.3-util xfsprogs sleuthkit
       - name: build
         run: go build ./...
       - name: vet

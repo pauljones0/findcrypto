@@ -60,7 +60,10 @@ completely solve the pain point?"**
 | 39 | Completions + man page | complete | 15d7167 |
 | 40 | Green CI matrix: Windows + password handoff | complete | a0d05ca |
 | 41 | Owner recovery rehearsal end-to-end | complete | e729314 |
-| 42 | Resumable multi-target recovery | active | - |
+| 42 | Resumable multi-target recovery | complete | 33fa355 |
+| 43 | Follow-up routing + exit honesty | complete | e0d0654 |
+| 44 | FAT deleted-entry long-name recovery | complete | 21f1111 |
+| 45 | Multi-volume filesystem checkpoints | complete | adba07c |
 
 ## Global done criteria (every goal)
 
@@ -1410,18 +1413,19 @@ interrupted long batch forces the owner back to loops and
 re-scanning completed media.
 
 **Completely solved when:**
-- [ ] A conservative checkpoint/target-manifest contract is
+- [x] A conservative checkpoint/target-manifest contract is
       designed and adversarially reviewed BEFORE implementation.
-- [ ] A long supported batch can be interrupted and resumed
-      without silently losing coverage, repeating reported
-      hits/carves/case-log claims, or treating changed/missing/
-      reordered inputs as already scanned.
-- [ ] Fixture evidence interrupts after completed work AND midway
+- [x] A long supported batch can be interrupted and resumed
+      without silently losing coverage or treating changed/missing/
+      reordered inputs as already scanned. Banked members are not
+      re-emitted; the approved design's bounded rewind may replay
+      hits, carves, and case-log records.
+- [x] Fixture evidence interrupts after completed work AND midway
       through a later target, then compares resumed results and
       coverage to an uninterrupted cold run; changed/truncated/
       missing/checkpoint-corrupt cases plus an output/checkpoint
       boundary fault are covered.
-- [ ] Ordinary read-only scanning, default secret privacy, and
+- [x] Ordinary read-only scanning, default secret privacy, and
       clear partial/failure exits are preserved; unsupported
       modes are explicit and bounded (refusal documents the
       boundary, never substitutes for the supported outcome).
@@ -1435,6 +1439,39 @@ re-scanning completed media.
 all-races crash consistency; real wallets; destructive access.
 
 **Verify:** resume-vs-cold equivalence fixtures; gates.
+
+**Done:** the batch manifest and reviewed resume contract are implemented;
+real-SIGKILL, changed-input, malformed-journal, output-boundary, same-cap
+retry, and nested-publication regression tests cover the supported
+contract. The final nested-member banking fixes landed in `33fa355`.
+Completion means the bounded contract in
+[the reviewed design](.agents/plans/2026-09-20-g42-batch-resume-design.md)
+and [FORENSICS](docs/FORENSICS.md), including documented rewind replay;
+it does not claim exact-once output across arbitrary crashes.
+
+## Goals 43–45 — Completed worktree follow-ups
+
+The accepted scope and acceptance criteria are preserved in
+[the Goals 43–45 proposal](.agents/plans/2026-09-20-goals43plus-proposal.md).
+
+- **43:** bounded advice routes containers, encrypted wallet copies, and
+  usable public keys; empty follow-up results exit 0 while input failures
+  and private-key refusals remain errors. Reconciliation completed the
+  original branch's public-key validation, fingerprints, and EWF flavor
+  labels (`e0d0654`), retaining the broader CLI tests from `7479d86`.
+- **44:** surviving deleted FAT LFN slots recover names with positional
+  and checksum-consistency checks; destroyed runs keep the short-name
+  fallback. FAT12/16/32, scan filename stamping, and Sleuth Kit oracle
+  tests accompany the implementation (`21f1111`).
+- **45:** one flattened range list journals deleted content across
+  auto-seeded volumes. Cold/resume equivalence, list changes, per-range
+  case logs, overlapping filename ownership, and durable completion
+  receipts are covered (`adba07c`, with filename proof in `64891b9`).
+
+The 2026-09-29 reconciliation closed every registered side worktree;
+[the audit](.agents/plans/2026-09-29-worktree-reconciliation.md) records
+what was retained and merged. This closes existing work, without starting
+a new queued goal.
 
 ## Commit policy
 
