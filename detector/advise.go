@@ -71,7 +71,7 @@ func Advise(path string) (Advice, error) {
 	// EWF v1 scans as today (detectScanTarget decodes the set);
 	// only the reason changes, to name the sniffed magic.
 	if len(head) >= len(ewfSignature) && bytes.Equal(head[:len(ewfSignature)], ewfSignature) {
-		return adviseRaw(path, fi, "starts with EnCase EWF magic: pass the image file itself — chunks decode and verify automatically (multi-segment sets: pass .E01/.s01)")
+		return adviseRaw(path, fi, fmt.Sprintf("starts with EWF magic (%s): pass the image file itself — chunks decode and verify automatically (multi-segment sets: pass .E01/.s01)", ewfFlavorName(path)))
 	}
 	if kind, _, err := OpenFS(f, 0); err == nil {
 		ad.Command = fmt.Sprintf("findbtc -fs %s", shellQuote(path))
@@ -146,7 +146,15 @@ func adviseFollowupOrRaw(path string, fi os.FileInfo, head []byte) (Advice, erro
 		// Private-only input stays raw: -watch would refuse it,
 		// so routing there strands the target.
 		if pubs, _ := ExtractXpubs(head); len(pubs) > 0 {
-			return adviseWatch(path, len(head), pubs)
+			var valid []string
+			for _, s := range pubs {
+				if _, err := ParseXPub(s); err == nil {
+					valid = append(valid, s)
+				}
+			}
+			if len(valid) > 0 {
+				return adviseWatch(path, len(head), valid)
+			}
 		}
 	}
 	return adviseRaw(path, fi, "no partition table or filesystem found")
@@ -168,11 +176,18 @@ func adviseHashes(path, evidence string) (Advice, error) {
 // key versions; the keys themselves stay out of the reasons.
 func adviseWatch(path string, headLen int, pubs []string) (Advice, error) {
 	var labels []string
+	var fingerprints []string
 	seen := map[string]bool{}
 	for _, s := range pubs {
-		if x, err := ParseXPub(s); err == nil && !seen[x.Label] {
-			seen[x.Label] = true
-			labels = append(labels, x.Label)
+		if x, err := ParseXPub(s); err == nil {
+			if !seen[x.Label] {
+				seen[x.Label] = true
+				labels = append(labels, x.Label)
+			}
+			if fp := x.Fingerprint(); !seen[fp] {
+				seen[fp] = true
+				fingerprints = append(fingerprints, fp)
+			}
 		}
 	}
 	keysWord := "extended public keys"
@@ -183,6 +198,9 @@ func adviseWatch(path string, headLen int, pubs []string) (Advice, error) {
 	if len(labels) > 0 {
 		evidence += fmt.Sprintf(" (%s)", strings.Join(labels, "+"))
 	}
+	if len(fingerprints) > 0 {
+		evidence += fmt.Sprintf("; fingerprints: %s", strings.Join(fingerprints, ", "))
+	}
 	return Advice{
 		Target:  path,
 		Command: fmt.Sprintf("findbtc -watch %s", shellQuote(path)),
@@ -191,6 +209,27 @@ func adviseWatch(path string, headLen int, pubs []string) (Advice, error) {
 			"-watch derives watch-only addresses locally with no network calls",
 		},
 	}, nil
+}
+
+// ewfFlavorName names the container flavor from its segment extension.
+// The signature establishes EWF v1; segment extensions name its flavor.
+func ewfFlavorName(path string) string {
+	base := path
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.LastIndexByte(base, '.'); i >= 0 {
+		ext := strings.ToUpper(base[i+1:])
+		if len(ext) == 3 && ext[1] >= '0' && ext[1] <= '9' && ext[2] >= '0' && ext[2] <= '9' {
+			switch ext[0] {
+			case 'E':
+				return "EnCase E01"
+			case 'S':
+				return "SMART S01"
+			}
+		}
+	}
+	return "EWF v1"
 }
 
 // adviseEWF2 answers an EWF2 container with the documented

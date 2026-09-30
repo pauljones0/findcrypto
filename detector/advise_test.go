@@ -176,7 +176,12 @@ func TestAdviseEWFImageScansAsToday(t *testing.T) {
 		if ad.Command != "findbtc "+path {
 			t.Errorf("%s: command %q, want a scan of the image itself", name, ad.Command)
 		}
-		if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, "EnCase EWF magic") {
+		joined := strings.Join(ad.Reasons, "; ")
+		flavor := "EnCase E01"
+		if name == "real S01" {
+			flavor = "SMART S01"
+		}
+		if !strings.Contains(joined, "EWF magic") || !strings.Contains(joined, flavor) {
 			t.Errorf("%s: reasons %q must name the sniffed magic", name, joined)
 		}
 	}
@@ -283,9 +288,60 @@ func TestAdviseKeysFileRoutesToWatch(t *testing.T) {
 	if !strings.Contains(joined, "2 checksum-valid extended public keys (xpub+zpub)") {
 		t.Errorf("reasons %q must name the count and key versions", joined)
 	}
+	if !strings.Contains(joined, "6cc9f252") {
+		t.Errorf("reasons %q must include the published vector's fingerprint", joined)
+	}
 	text := ad.Command + "\n" + joined
 	if strings.Contains(text, bip44MainXPub) || strings.Contains(text, bip84MainZPub) {
 		t.Errorf("advice must not echo the keys:\n%s", text)
+	}
+}
+
+// A checksum-valid encoding can still contain an unusable public key.
+// Advice must preserve raw scanning when the routed mode rejects it.
+func TestAdviseInvalidXpubStaysRaw(t *testing.T) {
+	x, err := ParseXPub(bip44MainXPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func([]byte){
+		"uncompressed": func(b []byte) { b[45] = 4 },
+		"outside-curve": func(b []byte) {
+			for i := 46; i < 78; i++ {
+				b[i] = 0xff
+			}
+		},
+		"invalid-master": func(b []byte) { b[4], b[5] = 0, 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := x.Serialize()
+			mutate(payload)
+			key := base58CheckEncode(payload)
+			if _, err := ParseXPub(key); err == nil {
+				t.Fatal("fixture must be rejected by watch parsing")
+			}
+			if pubs, _ := ExtractXpubs([]byte(key)); len(pubs) != 1 {
+				t.Fatal("fixture must pass the checksum-only shape check")
+			}
+			path := filepath.Join(t.TempDir(), "keys.txt")
+			if err := os.WriteFile(path, []byte(key), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ad, err := Advise(path)
+			if err != nil || ad.Command != "findbtc "+path {
+				t.Fatalf("invalid-key advice = %+v, %v; want raw scan", ad, err)
+			}
+			// A valid key alongside the invalid one still earns a watch
+			// route, with the count limited to usable keys.
+			if err := os.WriteFile(path, []byte(key+"\n"+bip44MainXPub), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ad, err = Advise(path)
+			if err != nil || ad.Command != "findbtc -watch "+path ||
+				!strings.Contains(strings.Join(ad.Reasons, "; "), "1 checksum-valid extended public key") {
+				t.Fatalf("mixed-key advice = %+v, %v", ad, err)
+			}
+		})
 	}
 }
 

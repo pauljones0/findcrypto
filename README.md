@@ -133,6 +133,9 @@ never scans:
 
     findbtc -advise /dev/sda
 
+Key-file advice lists validated public-key versions and fingerprints.
+Malformed keys keep the raw-scan recommendation.
+
 Detections print to stdout; logs, progress and the final `[COMPLETE]` line go
 to stderr, so `-json` output stays parseable. Exit codes are a contract:
 
