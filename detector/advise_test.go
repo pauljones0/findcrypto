@@ -70,6 +70,7 @@ func TestAdviseVolumeImage(t *testing.T) {
 		"ntfs":  buildTestNTFS,
 		"fat32": buildTestFAT32,
 		"exfat": buildTestExFAT,
+		"xfs":   buildTestXFS,
 	} {
 		ad, err := Advise(build(t))
 		if err != nil {
