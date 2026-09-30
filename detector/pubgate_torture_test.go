@@ -130,21 +130,32 @@ func TestPubGateTorture(t *testing.T) {
 	t.Logf("torture archive: %d bytes, %d outer + %d mid + %d leaf members",
 		fi.Size(), outers, outers*mids, want)
 
+	// Leaf hits only: a hit counts when its target nests three
+	// deep (leaf in mid in outer in root). Whether DEFLATE bytes
+	// leak a literal needle into an ancestor's raw stream depends
+	// on the Go flate encoder version (Go 1.24: none; Go 1.27:
+	// one per mid member), but the torture contract — every leaf
+	// member read exactly once — concerns leaves only. The
+	// " in [" nesting shape is fixed by Describe, not stdlib.
+	isLeaf := func(d Detection) bool { return strings.Count(d.Target, " in [") == 3 }
 	keyOf := func(d Detection) string {
 		return fmt.Sprintf("%s/%d/%s", d.Target, d.Offset, d.Needle)
 	}
-	scan := func(cap int64, start int64, cpPath, clPath string, keys map[string]bool) (dets int, err error, log string) {
+	scan := func(cap int64, start int64, cpPath, clPath string, keys map[string]bool) (dets int, log string, err error) {
 		maxOutstandingPubs = cap
 		var lb bytes.Buffer
 		err = ScanWithOptions(start, path, Options{
 			Log: &lb, CheckpointPath: cpPath, CaseLogPath: clPath,
 		}, func(d Detection) {
+			if !isLeaf(d) {
+				return
+			}
 			dets++
 			if keys != nil {
 				keys[keyOf(d)] = true
 			}
 		}, func(ProgressInfo) {})
-		return dets, err, lb.String()
+		return dets, lb.String(), err
 	}
 	lastCaseStatus := func(t *testing.T, clPath string) string {
 		t.Helper()
@@ -164,7 +175,7 @@ func TestPubGateTorture(t *testing.T) {
 	// fully — nil error, exact detection count (no drops, no
 	// hang), clean case-log completion, and the completion
 	// frontier journaled at exactly the file size.
-	bd, berr, blog := scan(defCap, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"), nil)
+	bd, blog, berr := scan(defCap, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"), nil)
 	if berr != nil {
 		t.Fatalf("baseline scan: %v", berr)
 	}
@@ -200,7 +211,7 @@ func TestPubGateTorture(t *testing.T) {
 	// root reads are sequential full blocks from offset 0.
 	cpPath, clPath := filepath.Join(dir, "cong.cp"), filepath.Join(dir, "cong.log")
 	ckeys := map[string]bool{}
-	cd, cerr, clog := scan(3, 0, cpPath, clPath, ckeys)
+	cd, clog, cerr := scan(3, 0, cpPath, clPath, ckeys)
 	if cerr == nil || !strings.Contains(cerr.Error(), "incomplete coverage") {
 		t.Fatalf("congested scan error = %v, want incomplete-coverage error", cerr)
 	}
@@ -248,6 +259,9 @@ func TestPubGateTorture(t *testing.T) {
 	rerr := ScanWithOptions(ccp.Offset, path, Options{
 		Log: &rlog, CheckpointPath: cpPath, CaseLogPath: filepath.Join(dir, "retry.log"),
 	}, func(d Detection) {
+		if !isLeaf(d) {
+			return
+		}
 		rd++
 		rkeys[keyOf(d)] = true
 	}, func(ProgressInfo) {})

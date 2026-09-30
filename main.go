@@ -68,7 +68,7 @@ func main() {
 	watchFormat := flag.String("watch-format", "csv", "Address-list format: csv or json (only with -watch)")
 	watchCount := flag.Int("watch-count", detector.WatchDefaultCount, "Addresses to derive per chain, external and change (only with -watch)")
 	balanceEndpoint := flag.String("balance-endpoint", "", "Opt-in: query ADDRESS balances from this Esplora-compatible base URL (only with -watch; leaks addresses to that server)")
-	fsPath := flag.String("fs", "", "Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT volume in FILE and scan their content")
+	fsPath := flag.String("fs", "", "Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT/XFS volume in FILE and scan their content")
 	fsOffset := flag.Int64("fs-offset", 0, "Byte offset of the volume boot sector inside FILE (only with -fs and -unallocated-only); when omitted, the partition table is followed automatically")
 	unallocatedOnly := flag.Bool("unallocated-only", false, "Scan only unallocated filesystem space (volume at -fs-offset); skips live data")
 	walkPath := flag.String("walk", "", "Sweep every regular file under DIR with the standard detectors (symlinks not followed unless -walk-follow-symlinks)")
@@ -368,8 +368,19 @@ func main() {
 		cp, err := detector.ReadCheckpoint(*checkpointPath)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// -resume overrides -s even when the
+				// checkpoint is missing: the announcement
+				// promises the beginning, so the start
+				// must be zero, not the flag's offset.
 				fmt.Fprintf(os.Stderr, "[main] No checkpoint at %s, starting from the beginning\n", *checkpointPath)
+				start = 0
 			} else {
+				// A requested resume that cannot even read
+				// its journal aborts loudly and records the
+				// attempt: exiting without a case entry
+				// would hide a failed recovery step.
+				attemptOpts := detector.Options{CaseLogPath: *caseLog, ToolVersion: version, Flags: os.Args[1:], CheckpointPath: *checkpointPath}
+				err = detector.RecordAttempt(attemptOpts, path, err)
 				fmt.Fprintf(os.Stderr, "[main] Exiting due to error: %s\n", err.Error())
 				os.Exit(1)
 			}
@@ -390,9 +401,22 @@ func main() {
 			// offset-overlap so needles straddling the 1MB
 			// journal point still match; the announcement and
 			// percent below name the rewound point actually
-			// scanned. -s keeps its exact offset and never
-			// rewinds.
-			start = detector.ResumeRewindOffset(0, cp.Offset)
+			// scanned. -resume overrides -s: the rewound
+			// journal point wins over the flag's exact
+			// offset (a fresh -s scan with no -resume keeps
+			// its offset and never rewinds). The detector
+			// verifies the frontier proof on its own handle
+			// before honoring it — replaced bytes rescan
+			// from zero instead of skipping contents never
+			// read. Main only pre-screens the cheap tier so
+			// the announcement names the likely point; a
+			// pass here authorizes nothing.
+			if reject, note := detector.CheapTierReject(cp.Ident, path); reject {
+				fmt.Fprintf(os.Stderr, "[main] WARNING: %s\n", note)
+				start = 0
+			} else {
+				start = detector.ResumeRewindOffset(0, cp.Offset)
+			}
 			msg := fmt.Sprintf("[main] Resuming %s at byte offset %d", path, start)
 			// Percent needs a known size; without one the byte
 			// offset stands alone (unchanged legacy shape).
@@ -600,7 +624,9 @@ func runMultiTarget(targets []string, unallocated bool, fsOffset int64, autoSeed
 					// Banked nested members replace wholesale:
 					// the filed set only grows within a run,
 					// and a completion files nil (subsumed).
+					// Identity likewise (run-start attested).
 					manifest.Targets[i].Covered = t.Covered
+					manifest.Targets[i].Ident = t.Ident
 				}
 			}
 			if err != nil {
@@ -684,30 +710,31 @@ func batchEntryStart(m *detector.BatchManifest, i int, tgt string, resume bool, 
 	entry := &m.Targets[i]
 	size, mtime := detector.BatchIdentity(tgt)
 	if resume && entry.State == detector.BatchComplete {
-		// A skip vouches for these exact bytes: identity must
-		// match, and a journaled digest must re-hash. Anything
-		// else rescans loudly — a replaced target is new
-		// evidence, not covered evidence. Entries without a
-		// digest (resumed-then-completed, or a journal that
-		// predates digests) skip on identity alone.
-		skip := detector.BatchIdentityMatches(*entry, size, mtime)
-		if skip && entry.SHA256 != "" {
-			if err := detector.VerifyBatchDigest(tgt, size, entry.SHA256); err != nil {
+		// A skip vouches for these exact bytes: a journaled
+		// digest re-hashes on one handle with stability
+		// checked, and anything else — digest-less entries
+		// from legacy journals included — rescans loudly. A
+		// replaced target is new evidence, not covered
+		// evidence.
+		skip := false
+		if entry.SHA256 != "" {
+			if !detector.BatchIdentityMatches(*entry, size, mtime) {
+				fmt.Fprintf(os.Stderr, "[main] WARNING: batch: %s changed since completion; rescanning from the start\n", tgt)
+			} else if err := detector.VerifyBatchDigest(tgt, size, entry.SHA256); err != nil {
 				fmt.Fprintf(os.Stderr, "[main] WARNING: batch: %s fails digest verification (%s); rescanning from the start\n", tgt, err.Error())
-				skip = false
+			} else {
+				skip = true
 			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[main] WARNING: batch: %s has no digest journaled; rescanning from the start\n", tgt)
 		}
 		if skip {
 			fmt.Fprintf(os.Stderr, "[main] batch: skipping %s (already complete)\n", tgt)
 			return 0, true
 		}
-		// A digest mismatch warned above; an identity mismatch
-		// warns here. Either way the old offset and digest are
-		// meaningless for the bytes now on disk.
-		if !detector.BatchIdentityMatches(*entry, size, mtime) {
-			fmt.Fprintf(os.Stderr, "[main] WARNING: batch: %s changed since completion; rescanning from the start\n", tgt)
-		}
 		entry.Offset = 0
+		entry.Covered = nil
+		entry.Proof = nil
 	}
 	start := int64(0)
 	if resume && (entry.State == detector.BatchActive || entry.State == detector.BatchFailed) {
@@ -715,24 +742,36 @@ func batchEntryStart(m *detector.BatchManifest, i int, tgt string, resume bool, 
 		if entry.State == detector.BatchFailed {
 			verb = "retrying failed target"
 		}
-		if entry.Offset > 0 && detector.BatchIdentityMatches(*entry, size, mtime) {
-			start = detector.ResumeRewindOffset(0, entry.Offset)
-			msg := fmt.Sprintf("[main] batch: %s %s at byte offset %d", verb, tgt, start)
-			if size > 0 && start >= 0 && start <= size {
-				msg += fmt.Sprintf(" (continuing at %d%%)", start*100/size)
-			}
-			fmt.Fprintln(os.Stderr, msg)
-		} else {
-			if entry.Offset > 0 {
+		// The detector verifies the frontier proof on its own
+		// handle; main only pre-screens the cheap tier so the
+		// announcement names the likely point. Filed
+		// proof/covered always travel to the detector, which
+		// verifies-or-restarts authoritatively.
+		if entry.Offset > 0 {
+			if reject, _ := detector.CheapTierReject(entry.Ident, tgt); reject {
 				fmt.Fprintf(os.Stderr, "[main] WARNING: batch: %s changed since the journal entry; rescanning from the start\n", tgt)
+				// Start over but leave the filed claim
+				// intact: the detector re-decides
+				// authoritatively on its own handle.
 			} else {
-				fmt.Fprintf(os.Stderr, "[main] batch: %s %s from the start\n", verb, tgt)
+				start = detector.ResumeRewindOffset(0, entry.Offset)
+				msg := fmt.Sprintf("[main] batch: %s %s at byte offset %d", verb, tgt, start)
+				if size > 0 && start >= 0 && start <= size {
+					msg += fmt.Sprintf(" (continuing at %d%%)", start*100/size)
+				}
+				fmt.Fprintln(os.Stderr, msg)
 			}
-			entry.Offset = 0
+		} else {
+			fmt.Fprintf(os.Stderr, "[main] batch: %s %s from the start\n", verb, tgt)
 		}
 	}
 	entry.State = detector.BatchActive
 	entry.Size, entry.Mtime = size, mtime
+	if ident, ok := detector.FileIdentityOf(tgt); ok {
+		entry.Ident = ident
+	} else {
+		entry.Ident = detector.FileIdentity{}
+	}
 	// A new scan certifies a new digest (or none); the old one
 	// must not linger into this run's journal entries.
 	entry.SHA256 = ""
@@ -762,7 +801,12 @@ func runUnallocated(path string, fsOffset int64, autoSeed bool, start int64, opt
 		ranges = append(ranges, r)
 		total += r.Len
 	}
-	if len(ranges) == 0 {
+	// A fresh empty run needs no pipeline; a resume must still
+	// validate its existing journal against the current list,
+	// including an empty list (B2's invariant covers every
+	// resume: zero ranges against a nonempty journal is a changed
+	// list and refuses loudly).
+	if len(ranges) == 0 && !opts.Resume {
 		fmt.Fprintln(os.Stderr, "[main] No unallocated space to scan.")
 		return nil
 	}
@@ -1418,12 +1462,15 @@ func runWatch(path, outPath, format string, count int, endpoint string) {
 	}
 	pubs, privFound := watchInputKeys(buf, path)
 	if len(pubs) == 0 {
+		// Readable-but-keyless input is a completed answer on
+		// stdout (exit 0), matching -hashes/-salvage: only the
+		// private-material refusal stays a loud exit 1.
 		if privFound {
 			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: found only private extended keys — findbtc never derives from private material (move the key to an offline machine and sweep to a fresh wallet)\n")
-		} else {
-			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: no extended public keys in %s\n", path)
+			os.Exit(1)
 		}
-		os.Exit(1)
+		fmt.Printf("No extended public keys in %s\n", path)
+		return
 	}
 	entries, err := detector.CollectWatchAddrs(pubs, count)
 	if err != nil {
