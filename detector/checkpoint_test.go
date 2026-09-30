@@ -2,9 +2,12 @@ package detector
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -112,7 +115,7 @@ func TestRangeResumeKillMidRange(t *testing.T) {
 		t.Fatal("fixture produced no detections")
 	}
 	ckpt := filepath.Join(t.TempDir(), "ckpt.json")
-	writeCheckpointRange(nil, ckpt, path, ranges, 1, O)
+	writeCheckpointRange(nil, ckpt, path, ranges, 1, O, nil, testIdent(path), mustProof(t, path, ranges[1].Start, O-ranges[1].Start), []RangeProof{mustRangeProof(t, 0, path, ranges[0].Start, ranges[0].Len)})
 	// Run 1 output: everything strictly before block O.
 	prefix := []FSExtent{ranges[0], {Start: ranges[1].Start, Len: O - ranges[1].Start}}
 	before := scanRangeList(t, path, prefix, Options{})
@@ -137,7 +140,7 @@ func TestRangeResumeKillBetweenRanges(t *testing.T) {
 	path, ranges, _ := rangeResumeFixture(t)
 	full := scanRangeList(t, path, ranges, Options{})
 	ckpt := filepath.Join(t.TempDir(), "ckpt.json")
-	writeCheckpointRange(nil, ckpt, path, ranges, 0, ranges[0].Start+ranges[0].Len)
+	writeCheckpointRange(nil, ckpt, path, ranges, 0, ranges[0].Start+ranges[0].Len, nil, testIdent(path), mustProof(t, path, ranges[0].Start, ranges[0].Len), nil)
 	before := scanRangeList(t, path, ranges[:1], Options{})
 	after := scanRangeList(t, path, ranges, Options{CheckpointPath: ckpt, Resume: true})
 	if ok, why := detListEqual(append(before, after...), full); !ok {
@@ -150,7 +153,7 @@ func TestRangeResumeKillBetweenRanges(t *testing.T) {
 func TestRangeResumeLogsPosition(t *testing.T) {
 	path, ranges, O := rangeResumeFixture(t)
 	ckpt := filepath.Join(t.TempDir(), "ckpt.json")
-	writeCheckpointRange(nil, ckpt, path, ranges, 1, O)
+	writeCheckpointRange(nil, ckpt, path, ranges, 1, O, nil, testIdent(path), mustProof(t, path, ranges[1].Start, O-ranges[1].Start), []RangeProof{mustRangeProof(t, 0, path, ranges[0].Start, ranges[0].Len)})
 	var log bytes.Buffer
 	scanRangeList(t, path, ranges, Options{CheckpointPath: ckpt, Resume: true, Log: &log})
 	// 1 MiB range + 1 MiB into range 1 of 4 MiB total = 50%.
@@ -211,7 +214,7 @@ func TestResumeDisplayIndex(t *testing.T) {
 func TestRangeResumeLogsPositionAtBoundary(t *testing.T) {
 	path, ranges, _ := rangeResumeFixture(t)
 	ckpt := filepath.Join(t.TempDir(), "ckpt.json")
-	writeCheckpointRange(nil, ckpt, path, ranges, 0, ranges[0].Start+ranges[0].Len)
+	writeCheckpointRange(nil, ckpt, path, ranges, 0, ranges[0].Start+ranges[0].Len, nil, testIdent(path), mustProof(t, path, ranges[0].Start, ranges[0].Len), nil)
 	var log bytes.Buffer
 	scanRangeList(t, path, ranges, Options{CheckpointPath: ckpt, Resume: true, Log: &log})
 	if want := "at range 2 of 3 (continuing at 25%)"; !strings.Contains(log.String(), want) {
@@ -224,33 +227,33 @@ func TestRangeResumeMismatch(t *testing.T) {
 	ckpt := filepath.Join(t.TempDir(), "ckpt.json")
 	cases := map[string]func() (string, []FSExtent, string){
 		"shortened range": func() (string, []FSExtent, string) {
-			writeCheckpointRange(nil, ckpt, path, ranges, 1, O)
+			writeCheckpointRange(nil, ckpt, path, ranges, 1, O, nil, testIdent(path), mustProof(t, path, ranges[1].Start, O-ranges[1].Start), []RangeProof{mustRangeProof(t, 0, path, ranges[0].Start, ranges[0].Len)})
 			bad := append([]FSExtent{}, ranges...)
 			bad[1].Len--
 			return ckpt, bad, "does not match"
 		},
 		"reordered": func() (string, []FSExtent, string) {
-			writeCheckpointRange(nil, ckpt, path, ranges, 1, O)
+			writeCheckpointRange(nil, ckpt, path, ranges, 1, O, nil, testIdent(path), mustProof(t, path, ranges[1].Start, O-ranges[1].Start), []RangeProof{mustRangeProof(t, 0, path, ranges[0].Start, ranges[0].Len)})
 			return ckpt, []FSExtent{ranges[1], ranges[0], ranges[2]}, "does not match"
 		},
 		"dropped range": func() (string, []FSExtent, string) {
-			writeCheckpointRange(nil, ckpt, path, ranges, 1, O)
+			writeCheckpointRange(nil, ckpt, path, ranges, 1, O, nil, testIdent(path), mustProof(t, path, ranges[1].Start, O-ranges[1].Start), []RangeProof{mustRangeProof(t, 0, path, ranges[0].Start, ranges[0].Len)})
 			return ckpt, ranges[:2], "does not match"
 		},
 		"wrong path": func() (string, []FSExtent, string) {
-			writeCheckpointRange(nil, ckpt, "/other/file.bin", ranges, 1, O)
+			writeCheckpointRange(nil, ckpt, "/other/file.bin", ranges, 1, O, nil, testIdent("/other/file.bin"), nil, nil)
 			return ckpt, ranges, "not " + path
 		},
 		"legacy journal": func() (string, []FSExtent, string) {
-			writeCheckpoint(nil, ckpt, path, O)
+			writeCheckpoint(nil, ckpt, path, O, nil, testIdent(path), nil)
 			return ckpt, ranges, "no range list"
 		},
 		"index out of range": func() (string, []FSExtent, string) {
-			writeCheckpointRange(nil, ckpt, path, ranges, 9, O)
+			writeCheckpointRange(nil, ckpt, path, ranges, 9, O, nil, testIdent(path), nil, nil)
 			return ckpt, ranges, "beyond"
 		},
 		"offset outside range": func() (string, []FSExtent, string) {
-			writeCheckpointRange(nil, ckpt, path, ranges, 1, ranges[2].Start+100)
+			writeCheckpointRange(nil, ckpt, path, ranges, 1, ranges[2].Start+100, nil, testIdent(path), nil, nil)
 			return ckpt, ranges, "outside range"
 		},
 	}
@@ -290,7 +293,7 @@ func TestRangeResumeAlreadyComplete(t *testing.T) {
 	path, ranges, _ := rangeResumeFixture(t)
 	ckpt := filepath.Join(t.TempDir(), "ckpt.json")
 	last := ranges[len(ranges)-1]
-	writeCheckpointRange(nil, ckpt, path, ranges, len(ranges)-1, last.Start+last.Len)
+	writeCheckpointRange(nil, ckpt, path, ranges, len(ranges)-1, last.Start+last.Len, nil, testIdent(path), mustProof(t, path, last.Start, last.Len), []RangeProof{mustRangeProof(t, 0, path, ranges[0].Start, ranges[0].Len), mustRangeProof(t, 1, path, ranges[1].Start, ranges[1].Len)})
 	var dets []Detection
 	if err := ScanRangesWithOptions(path, ranges, Options{CheckpointPath: ckpt, Resume: true},
 		func(d Detection) { dets = append(dets, d) }, func(ProgressInfo) {}); err != nil {
@@ -315,16 +318,259 @@ func TestRangeCheckpointFreshRun(t *testing.T) {
 	}
 }
 
-// Checkpointing across auto-seeded volumes stays refused: one journal
-// holds one range list.
-func TestScanFSVolumesMultiVolumeCheckpointRefused(t *testing.T) {
-	disk, _ := composeDisk(t, "mbr")
-	_, err := ScanFSVolumes(disk, 0, true, Options{CheckpointPath: filepath.Join(t.TempDir(), "c.json")},
-		func(Detection) {}, func(ProgressInfo) {}, func(string, FSEntry) {})
-	if err == nil {
-		t.Fatal("multi-volume checkpoint must refuse")
-	} else if !strings.Contains(err.Error(), "not supported across 2") {
-		t.Errorf("refusal must name the problem: %v", err)
+// Every successful completed run durably files its completion
+// frontier before returning: the journal is the run's receipt, and
+// a success that journals nothing (or a stale point) strands the
+// run's proof — the next resume re-scans instead of skipping. Each
+// of these tiny runs must file its own receipt; the loop fails
+// fast on the first miss (a retry-until-pass here would mask the
+// EOF/frontier race this test pins).
+func TestCompletionFrontierReceipt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tiny.bin")
+	if err := os.WriteFile(path, []byte("bestblock"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		ckpt := filepath.Join(dir, fmt.Sprintf("c%d.json", i))
+		var dets int
+		if err := ScanWithOptions(0, path, Options{CheckpointPath: ckpt},
+			func(Detection) { dets++ }, func(ProgressInfo) {}); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if dets != 1 {
+			t.Fatalf("run %d: %d detections, want 1", i, dets)
+		}
+		cp, err := ReadCheckpoint(ckpt)
+		if err != nil {
+			t.Fatalf("run %d filed no journal: %v", i, err)
+		}
+		if cp.Offset != 9 {
+			t.Fatalf("run %d journal at offset %d, want completion 9", i, cp.Offset)
+		}
+		if cp.Proof == nil {
+			t.Fatalf("run %d journal lacks its content proof", i)
+		}
+	}
+}
+
+// A checkpointed -fs run over auto-seeded volumes journals ONE
+// flattened deleted-entry range list spanning every volume (the
+// unallocated precedent): the old cross-volume refusal is gone, the
+// checkpointed detections equal a plain run, and resuming the
+// completion journal scans nothing.
+func TestScanFSVolumesMultiVolumeCheckpointRoundTrip(t *testing.T) {
+	disk, starts := composeDisk(t, "mbr")
+	collect := func(opts Options) []Detection {
+		var dets []Detection
+		if _, err := ScanFSVolumes(disk, 0, true, opts,
+			func(d Detection) { dets = append(dets, d) },
+			func(ProgressInfo) {}, func(string, FSEntry) {}); err != nil {
+			t.Fatalf("fs scan: %v", err)
+		}
+		return dets
+	}
+	plain := collect(Options{})
+	if len(plain) == 0 {
+		t.Fatal("fixture produced no detections")
+	}
+	ckpt := filepath.Join(t.TempDir(), "c.json")
+	journaled := collect(Options{CheckpointPath: ckpt})
+	if !reflect.DeepEqual(journaled, plain) {
+		t.Fatalf("checkpointed run differs from plain run:\njournaled=%v\nplain=%v", journaled, plain)
+	}
+	cp, err := ReadCheckpoint(ckpt)
+	if err != nil {
+		t.Fatalf("multi-volume run must leave a journal: %v", err)
+	}
+	if len(cp.Ranges) < 2 {
+		t.Fatalf("journal holds %d ranges, want a flattened cross-volume list", len(cp.Ranges))
+	}
+	if cp.Ranges[0].Start < starts[0] || cp.Ranges[0].Start >= starts[1] {
+		t.Errorf("flattened list starts at %d, want inside volume 1 [%d,%d)",
+			cp.Ranges[0].Start, starts[0], starts[1])
+	}
+	last := cp.Ranges[len(cp.Ranges)-1]
+	if last.Start < starts[1] {
+		t.Errorf("flattened list ends at %d, want inside volume 2 (>= %d)", last.Start, starts[1])
+	}
+	if cp.RangeIndex != len(cp.Ranges)-1 || cp.Offset != last.Start+last.Len {
+		t.Errorf("journal at (%d,%d), want completion (%d,%d)",
+			cp.RangeIndex, cp.Offset, len(cp.Ranges)-1, last.Start+last.Len)
+	}
+	if dets := collect(Options{CheckpointPath: ckpt, Resume: true}); len(dets) != 0 {
+		t.Errorf("resuming a completed multi-volume journal must scan nothing, got %v", dets)
+	}
+}
+
+// A run killed mid-2nd-volume, then resumed, unions to the
+// uninterrupted detection set with identical file= stamps. The kill
+// is modeled the Goal 17 way: a journal at a real journal point
+// splitting a real needle, the prefix scanned with the real code.
+func TestScanFSVolumesMultiVolumeKillResume(t *testing.T) {
+	for _, scheme := range []string{"mbr", "gpt"} {
+		disk, _ := composeMixedDisk(t, scheme)
+		targets, err := resolveVolumes(disk, 0, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(targets) != 2 {
+			t.Fatalf("%s: %d volumes, want 2", scheme, len(targets))
+		}
+		_, ranges, owners, err := flattenDeletedRanges(disk, targets, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, vol1, _, err := flattenDeletedRanges(disk, targets[:1], nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		idx := len(vol1) // first range of volume 2
+		if idx <= 0 || idx >= len(ranges) {
+			t.Fatalf("%s: volume boundary %d outside flattened list of %d", scheme, idx, len(ranges))
+		}
+		stamp := func(dets *[]Detection) func(Detection) {
+			return func(d Detection) {
+				for i, r := range ranges {
+					if d.Offset >= r.Start && d.Offset < r.Start+r.Len {
+						d.FileName = owners[i]
+						break
+					}
+				}
+				*dets = append(*dets, d)
+			}
+		}
+		collectFS := func(opts Options) []Detection {
+			var dets []Detection
+			// Production FileName retained: the union-vs-cold
+			// comparison must prove the resumed production
+			// stamp, not the test's ownership map (which
+			// only the raw prefix scan below needs).
+			if _, err := ScanFSVolumes(disk, 0, true, opts,
+				func(d Detection) { dets = append(dets, d) },
+				func(ProgressInfo) {}, func(string, FSEntry) {}); err != nil {
+				t.Fatalf("%s: fs scan: %v", scheme, err)
+			}
+			return dets
+		}
+		full := collectFS(Options{})
+		if len(full) == 0 {
+			t.Fatalf("%s: fixture produced no detections", scheme)
+		}
+		// Split a real needle inside volume 2's first range.
+		O := int64(-1)
+		var splitNeedle string
+		for _, d := range full {
+			if d.Offset > ranges[idx].Start && d.Offset+int64(d.MatchLen) <= ranges[idx].Start+ranges[idx].Len {
+				O = d.Offset + 2
+				splitNeedle = d.Needle
+				break
+			}
+		}
+		if O < 0 {
+			t.Fatalf("%s: no splittable needle in volume 2 range %+v", scheme, ranges[idx])
+		}
+		ckpt := filepath.Join(t.TempDir(), "c.json")
+		var done []RangeProof
+		for i := 0; i < idx; i++ {
+			done = append(done, mustRangeProof(t, i, disk, ranges[i].Start, ranges[i].Len))
+		}
+		writeCheckpointRange(nil, ckpt, disk, ranges, idx, O, nil, testIdent(disk),
+			mustProof(t, disk, ranges[idx].Start, O-ranges[idx].Start), done)
+		// Run 1 output: everything strictly before the kill point.
+		prefix := append(append([]FSExtent{}, ranges[:idx]...),
+			FSExtent{Start: ranges[idx].Start, Len: O - ranges[idx].Start})
+		var before []Detection
+		if err := ScanRangesWithOptions(disk, prefix, Options{}, stamp(&before), func(ProgressInfo) {}); err != nil {
+			t.Fatalf("%s: prefix scan: %v", scheme, err)
+		}
+		after := collectFS(Options{CheckpointPath: ckpt, Resume: true})
+		union := append(append([]Detection{}, before...), after...)
+		if ok, why := detListEqual(union, full); !ok {
+			t.Errorf("%s: kill/resume union differs from uninterrupted run: %s", scheme, why)
+		}
+		split := false
+		for _, d := range union {
+			if d.Needle == splitNeedle && d.Offset == O-2 {
+				split = true
+			}
+			if d.FileName == "" {
+				t.Errorf("%s: union detection without file= stamp: %+v", scheme, d)
+			}
+		}
+		if !split {
+			t.Errorf("%s: needle %q split by the kill point was lost", scheme, splitNeedle)
+		}
+		for _, d := range full {
+			if d.FileName == "" {
+				t.Errorf("%s: cold detection without file= stamp: %+v", scheme, d)
+			}
+		}
+	}
+}
+
+// Resume validates the FULL flattened list: a range list changed in
+// ANY volume refuses loudly, same rule as the single-volume scan.
+func TestScanFSVolumesMultiVolumeResumeMismatch(t *testing.T) {
+	patchSecond := func(disk string, starts []int64) {
+		raw, err := os.ReadFile(disk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Shrink ext inode 13 (volume 2) from 100 to 90 bytes.
+		at := starts[1] + 4*extTestBlock + 12*128 + 4
+		binary.LittleEndian.PutUint32(raw[at:], 90)
+		if err := os.WriteFile(disk, raw, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	patchFirst := func(disk string, starts []int64) {
+		raw, err := os.ReadFile(disk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Drop the first FAT32 deleted short entry (volume 1).
+		g := fat32Geometry()
+		root := starts[0] + g.clustOff(2)
+		dropped := false
+		for slot := int64(0); ; slot++ {
+			s := raw[root+slot*32 : root+(slot+1)*32]
+			if s[0] == 0x00 {
+				break
+			}
+			if s[0] == 0xE5 && s[11] == 0x20 {
+				s[0] = 0x00
+				dropped = true
+				break
+			}
+		}
+		if !dropped {
+			t.Fatal("no FAT32 deleted short entry to drop")
+		}
+		if err := os.WriteFile(disk, raw, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, patch := range map[string]func(string, []int64){
+		"second volume changed": patchSecond,
+		"first volume changed":  patchFirst,
+	} {
+		disk, starts := composeMixedDisk(t, "mbr")
+		ckpt := filepath.Join(t.TempDir(), "c.json")
+		if _, err := ScanFSVolumes(disk, 0, true, Options{CheckpointPath: ckpt},
+			func(Detection) {}, func(ProgressInfo) {}, func(string, FSEntry) {}); err != nil {
+			t.Fatalf("%s: fs scan: %v", name, err)
+		}
+		patch(disk, starts)
+		_, rerr := ScanFSVolumes(disk, 0, true, Options{CheckpointPath: ckpt, Resume: true},
+			func(Detection) {}, func(ProgressInfo) {}, func(string, FSEntry) {})
+		if rerr == nil {
+			t.Errorf("%s: resume must refuse", name)
+		} else if !strings.Contains(rerr.Error(), "does not match") {
+			t.Errorf("%s: error %q must name the list mismatch", name, rerr)
+		} else if !strings.Contains(rerr.Error(), "refus") {
+			t.Errorf("%s: error %q must refuse loudly", name, rerr)
+		}
 	}
 }
 
@@ -419,4 +665,11 @@ func TestBatchJournalValidation(t *testing.T) {
 	if got.IsBatch() {
 		t.Error("legacy journal must not read as batch")
 	}
+}
+
+// testIdent attests path for crafted journals, or zero when the
+// path is fictional (refusal-path tests, which fail before trust).
+func testIdent(path string) FileIdentity {
+	ident, _ := FileIdentityOf(path)
+	return ident
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -42,11 +43,33 @@ func pubgateLocalOnlyMember(t *testing.T, name string, content []byte) []byte {
 	return append(out, data...)
 }
 
+// pubgateDetKey identifies a detection by stable emitted identity,
+// the same key shape TestPubGateSameCapRetryCompletes uses for
+// union accounting. Recovery-only members share a name but their
+// Target embeds the member data offset, so identical members stay
+// distinguishable.
+func pubgateDetKey(d Detection) string {
+	return fmt.Sprintf("%s/%d/%s", d.Target, d.Offset, d.Needle)
+}
+
 // An EOF-flush gate trip must never poison the frozen journal: the
 // flush publishes pre-frontier bytes (directory-less members the
 // root pass already walked past), so the frozen point must still
 // re-cover them on retry — never certify complete with lost
 // coverage. Fully synchronous, no timing assumption, no sleep.
+//
+// UNION ACCOUNTING (not per-run re-emission): the no-drop
+// scheduler banks covered members by stable identity and retries
+// DEFER banked members — never re-read, never re-emitted — so
+// concatenated attempt outputs carry each hit exactly once.
+// Asserting the retry re-emits all 10 would contradict that
+// deferral, and the deferral is exactly what same-cap convergence
+// (TestPubGateSameCapRetryCompletes) requires: without it, retries
+// replay the admitted prefix forever instead of converging. The
+// binding criterion is therefore the UNION across attempts —
+// congested ∪ retry must equal the full baseline set, with an
+// EMPTY intersection proving banked members deferred (no
+// duplicates) and a complete retry proving nothing was lost.
 func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 	old := maxOutstandingPubs
 	defer func() { maxOutstandingPubs = old }()
@@ -69,22 +92,32 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	scan := func(cap int64, start int64, cpPath, clPath string) (dets int, err error, log string) {
+	// Nested hits only (Target != path): whether fixture bytes
+	// leak a literal needle into a raw stream depends on the Go
+	// flate encoder version, but the banking contract concerns
+	// nested members only. Filtering keeps counts exact on every
+	// toolchain.
+	scan := func(cap int64, start int64, cpPath, clPath string) (keys map[string]bool, log string, err error) {
 		maxOutstandingPubs = cap
+		keys = map[string]bool{}
 		var lb bytes.Buffer
 		err = ScanWithOptions(start, path, Options{
 			Log: &lb, CheckpointPath: cpPath, CaseLogPath: clPath,
-		}, func(Detection) { dets++ }, func(ProgressInfo) {})
-		return dets, err, lb.String()
+		}, func(d Detection) {
+			if d.Target != path {
+				keys[pubgateDetKey(d)] = true
+			}
+		}, func(ProgressInfo) {})
+		return keys, lb.String(), err
 	}
 
 	// Baseline: uncongested, recovery finds all 10.
-	bd, berr, blog := scan(100, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"))
+	bkeys, blog, berr := scan(100, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"))
 	if berr != nil {
 		t.Fatalf("baseline scan: %v\n%s", berr, blog)
 	}
-	if bd != 10 {
-		t.Fatalf("baseline detections = %d, want 10\n%s", bd, blog)
+	if len(bkeys) != 10 {
+		t.Fatalf("baseline unique detections = %d, want 10\n%s", len(bkeys), blog)
 	}
 	if logs := readCaseLog(t, filepath.Join(dir, "base.log")); len(logs) == 0 || logs[len(logs)-1].Status != "complete" {
 		t.Fatalf("baseline case-log last status = %+v, want complete", logs)
@@ -94,7 +127,7 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 	// nonzero-floor assertion: a no-drop journal may honestly
 	// freeze at 0 when nothing past the start is proven.)
 	cpPath, clPath := filepath.Join(dir, "cong.cp"), filepath.Join(dir, "cong.log")
-	cd, cerr, clog := scan(3, 0, cpPath, clPath)
+	ckeys, clog, cerr := scan(3, 0, cpPath, clPath)
 	if cerr == nil || !strings.Contains(cerr.Error(), "incomplete coverage") {
 		t.Fatalf("congested scan error = %v, want incomplete-coverage error\n%s", cerr, clog)
 	}
@@ -102,7 +135,7 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("congested journal unreadable: %v", err)
 	}
-	t.Logf("congested dets=%d frozen_offset=%d size=%d", cd, cp.Offset, fi.Size())
+	t.Logf("congested unique=%d frozen_offset=%d size=%d", len(ckeys), cp.Offset, fi.Size())
 	if cp.Offset >= fi.Size() {
 		t.Fatalf("congested journal offset = %d, want below size %d (completion must never journal)", cp.Offset, fi.Size())
 	}
@@ -110,29 +143,61 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 		t.Fatalf("congested case-log last status = %+v, want non-complete (error)", logs)
 	}
 
-	// Retry: the frozen journal, uncongested, must re-cover the
-	// full baseline — omitted pre-frontier work is retried,
-	// never lost behind a completion claim.
+	// Retry: the frozen journal, uncongested, must complete with
+	// the omitted remainder — union(congested, retry) re-covers
+	// the full baseline, never lost behind a completion claim,
+	// never double-emitted.
 	maxOutstandingPubs = 100
 	var rlog bytes.Buffer
-	rd := 0
+	rkeys := map[string]bool{}
 	rerr := ScanWithOptions(cp.Offset, path, Options{
 		Log: &rlog, CheckpointPath: cpPath, CaseLogPath: filepath.Join(dir, "retry.log"),
-	}, func(Detection) { rd++ }, func(ProgressInfo) {})
+	}, func(d Detection) {
+		if d.Target != path {
+			rkeys[pubgateDetKey(d)] = true
+		}
+	}, func(ProgressInfo) {})
 	rlogs := readCaseLog(t, filepath.Join(dir, "retry.log"))
 	rstatus := ""
 	if len(rlogs) != 0 {
 		rstatus = rlogs[len(rlogs)-1].Status
 	}
-	t.Logf("retry dets=%d err=%v status=%s frozen_offset=%d", rd, rerr, rstatus, cp.Offset)
+	t.Logf("retry unique=%d err=%v status=%s frozen_offset=%d", len(rkeys), rerr, rstatus, cp.Offset)
 	if rerr != nil {
 		t.Fatalf("retry scan: %v\n%s", rerr, rlog.String())
 	}
 	if rstatus != "complete" {
 		t.Fatalf("retry case-log last status = %q, want complete", rstatus)
 	}
-	if rd != 10 {
-		t.Fatalf("retry detections = %d, want baseline 10: status %q certifies complete with lost coverage (frozen offset %d skipped pre-frontier bytes)",
-			rd, rstatus, cp.Offset)
+	// Banked members must defer: any key in BOTH attempts is a
+	// duplicate emission, contradicting no-drop deferral.
+	for k := range rkeys {
+		if ckeys[k] {
+			t.Fatalf("retry re-emitted banked detection %q: intersection must be empty (banked members defer, never re-emit)", k)
+		}
+	}
+	// Union must be exactly the baseline set: complete with
+	// anything less (or anything extra) is a dishonest claim.
+	union := map[string]bool{}
+	for k := range ckeys {
+		union[k] = true
+	}
+	for k := range rkeys {
+		union[k] = true
+	}
+	t.Logf("congested=%d retry=%d union=%d baseline=%d", len(ckeys), len(rkeys), len(union), len(bkeys))
+	if len(union) != len(bkeys) {
+		t.Fatalf("union(congested, retry) = %d unique, want baseline %d: status %q certifies complete with lost coverage (frozen offset %d skipped pre-frontier bytes)",
+			len(union), len(bkeys), rstatus, cp.Offset)
+	}
+	for k := range bkeys {
+		if !union[k] {
+			t.Fatalf("union missing baseline detection %q: status %q certifies complete with lost coverage", k, rstatus)
+		}
+	}
+	for k := range union {
+		if !bkeys[k] {
+			t.Fatalf("union carries phantom detection %q outside the baseline set", k)
+		}
 	}
 }

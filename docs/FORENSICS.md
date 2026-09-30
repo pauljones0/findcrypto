@@ -54,7 +54,7 @@ Supported inputs, detected automatically:
 - **Split raw** (`base.001`, `base.002`, …): concatenated and scanned
   as one stream; any segment may be named on the command line.
 - **Raw** devices and files, as before.
-- **Filesystem-guided** (`-fs`, `-unallocated-only`): NTFS/ext
+- **Filesystem-guided** (`-fs`, `-unallocated-only`): NTFS/ext/FAT/exFAT/XFS
   inventories and range scans; each range appends its own case-log
   record.
 
@@ -62,18 +62,17 @@ Long scans should add `-checkpoint case.checkpoint`: an interrupted
 run resumes with `-resume` instead of restarting. The case log records
 the checkpoint path and the resume offset.
 
-Range scans (`-fs` over one volume, `-unallocated-only`) journal
-`(range_index, offset)` the same way. Resume first checks the journal's
-range list still matches the volume's exactly — a changed filesystem
-refuses loudly rather than silently skipping bytes, so re-image and
-start over if the evidence moved. The resumed range rewinds to its 4kB
-block grid just before the journal point, so patterns straddling the
-interruption still match and the resumed detection set is identical to
-an uninterrupted run (the re-scanned window may re-report hits already
-printed before the kill — deduplicate by `(needle, offset)` when
-merging outputs). One journal holds one range list: checkpointing is
-refused across several auto-seeded volumes in one `-fs` run — pin one
-volume with `-fs-offset` and journal each volume separately.
+Range scans (`-fs`, `-unallocated-only`) journal `(range_index,
+offset)` the same way. A `-fs` run over several auto-seeded volumes
+journals one flattened deleted-entry range list spanning every volume;
+resume first checks that full list still matches exactly — a range
+list changed in ANY volume refuses loudly rather than silently
+skipping bytes, so re-image and start over if the evidence moved. The
+resumed range rewinds to its 4kB block grid just before the journal
+point, so patterns straddling the interruption still match and the
+resumed detection set is identical to an uninterrupted run (the
+re-scanned window may re-report hits already printed before the kill
+— deduplicate by `(needle, offset)` when merging outputs).
 
 Batch runs (several `TARGET` files with `-checkpoint`) journal a
 per-target manifest instead of one offset. Each entry tracks its
@@ -88,26 +87,74 @@ work; nothing is ever skipped without journaled proof.
 Resume refuses loudly when the journal does not match the run:
 a different target list or order, different profile / carve /
 JSON / reveal / baseline / case-log options, a legacy or range
-journal, or a corrupt file. A target whose size changed since its
-journal entry is rescanned from the start with a warning, since
-the old offset is meaningless. A skip re-validates the entry
-first: size and modification time must match, and a journaled
-content digest — recorded for every clean full pass — must
-re-hash. A same-size replacement with a forged timestamp fails
-verification and rescans; entries without a digest (interrupted
-then finished across runs, or journals from older binaries) skip
-on metadata alone. A batch journal opened by an old binary falls
-back to a full rescan rather than skipping bytes.
+journal, or a corrupt file. Every resume decision is authorized
+by a versioned content proof, not by metadata: each journal
+point files a SHA-256 over the exact bytes read (the root
+prefix for whole-file frontiers, the range span for active
+range frontiers, the full span for completed ranges and
+targets), and the next run re-reads and re-hashes that span on
+the same handle it then scans before honoring the offset, the
+skip, or any banked member. Anything else — a same-size
+replacement, a touched-up timestamp, a changed-middle rewrite,
+a remapped device, a swapped EWF/split segment, or a journal
+from an older binary that never recorded proofs — rescans from
+the start with a warning. (A new journal opened by an old binary
+degrades to that binary's own rules — digest re-hash where the
+journal carries a digest, metadata otherwise — so upgrade the
+binary, not the journal.) Metadata (device, inode, size,
+timestamps) is only a cheap rejection tier that skips the
+re-read when the bytes obviously moved; a metadata match alone
+authorizes nothing, so weak-metadata shapes (Windows in-place
+rewrites with restored timestamps, coarse-clock filesystems,
+stale NFS attributes) all fail closed at the proof. Banked
+nested members additionally carry the archive span they derive
+from and are kept only inside verified bytes, so a prefix proof
+never blesses members outside it — with one qualification for
+gzip: a member's end is unknowable before it reads, so deferral
+checks the filed start alone and a hand-shrunk span end is
+trusted up to its verified bytes (same trust boundary as the
+journal itself: operator-local state, never accept a journal
+from an untrusted source). Zip and recovery extents check in
+full. Explicit `-s` starts are caller assertions, never proven
+bytes: their journals file span proofs a later `-resume`
+refuses, rescanning from zero.
+
+The honest price is re-reads: a resume sequentially re-hashes
+the bytes it skips (no detection work, usually page-cache hot),
+completed-target skips re-hash the full stream, and range
+resumes re-verify every completed range. Budget roughly one
+extra sequential pass over skipped bytes — measured on this
+machine: re-verifying a 256 MiB prefix takes ~2 s (page-cache
+hot) against a ~39 s full scan. Two contracts remain
+with the operator: quiesce writers during scans. For plain
+files scanned with journaling on (`-checkpoint`), a concurrent
+write is detected and warned — the run baselines the source at
+open and re-checks at root end, and completed skips check
+stability before and after the re-hash — but uncheckpointed
+plain scans run no pre/post check, and decoded sources (EWF
+sets, split spans) carry none either: a mid-scan mutation there
+is silent this run, and the next resume's proofs fail closed
+and rescan. Exact concurrent guarantees need a snapshot or
+write exclusion the tool does not claim,
+and re-image evidence whose bytes may have changed on a medium
+that cannot be re-read identically (failing media: resume
+re-reads fault the same way the scan did, so finish bad-media
+scans in one run when possible).
 
 A congested run — more nested archives in flight than the
 publication cap admits — drains what it admitted and then fails
 honestly with an `incomplete coverage` error instead of clean
 completion: the case log records status `error`, the checkpoint
-keeps only its last skip-free proven point (completion never
-journals), and a batch entry lands in `failed`, never `complete`.
-Resume retries from the frozen point and re-covers the omitted
-bytes, so an uncongested retry concatenates to the full set
-(same seam-dedup rule as above for re-reported hits).
+keeps its last skip-free proven point plus the banked members it
+already read (completion never journals), and a batch entry lands
+in `failed`, never `complete`. Resume retries from the frozen
+point and covers only the omitted members — banked ones defer,
+so same-cap retries converge (a handful of attempts for a
+ten-member burst) and concatenated `-json` outputs carry each
+nested hit exactly once, with no cross-attempt duplicates. (A
+directory-less recovery trip additionally rewinds the offset to
+the run start, since its bytes precede every mid-run point.)
+Root-seam re-emission keeps the dedup rule above.
 
 Carves survive kills: every carve file commits atomically (a kill
 leaves complete files, never torn bytes), a resumed run continues
