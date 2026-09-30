@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/pauljones0/findbtc/detector"
 )
 
 // testBinary is a built findbtc used by subprocess exit-code tests.
@@ -1052,6 +1054,135 @@ func TestHashesCLI(t *testing.T) {
 	}
 }
 
+// Follow-up modes agree on empty input (Goal 43): readable input
+// with nothing to report prints a No-…-in-FILE line on stdout and
+// exits 0; only missing or unreadable input exits 1. -watch was the
+// outlier (stderr + exit 1); this matrix pins all three.
+func TestFollowupExitMatrix(t *testing.T) {
+	dir := t.TempDir()
+	keyless := writeGateFile(t, dir, "keyless.txt",
+		"field notes: imaged the stick, nothing carried over but prose\n")
+	missing := filepath.Join(dir, "absent.bin")
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{"-hashes", "No crack material found in " + keyless},
+		{"-salvage", "No salvageable database pages in " + keyless},
+		{"-watch", "No extended public keys in " + keyless},
+	}
+	for _, c := range cases {
+		stdout, stderr, exit := runTestBinary(t, c.mode, keyless)
+		if exit != 0 {
+			t.Errorf("%s readable-but-empty: exit %d, want 0 (stderr: %s)", c.mode, exit, firstLine(stderr))
+		}
+		if !strings.Contains(stdout, c.want) {
+			t.Errorf("%s readable-but-empty: stdout %q must hold %q", c.mode, firstLine(stdout), c.want)
+		}
+		if strings.Contains(stderr, "Exiting due to error") {
+			t.Errorf("%s readable-but-empty: stderr must not error, got: %s", c.mode, firstLine(stderr))
+		}
+		_, stderr, exit = runTestBinary(t, c.mode, missing)
+		if exit != 1 {
+			t.Errorf("%s missing: exit %d, want 1 (stderr: %s)", c.mode, exit, firstLine(stderr))
+		}
+	}
+	// Unreadable input still exits 1 (chmod-000 only bites on
+	// enforcing platforms; where the probe open succeeds the case
+	// cannot run).
+	noperm := writeGateFile(t, dir, "noperm.bin", "prose nobody can read\n")
+	if err := os.Chmod(noperm, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(noperm, 0644) })
+	if f, err := os.Open(noperm); err == nil {
+		f.Close()
+		t.Log("platform reads chmod-000 files; unreadable cases skipped")
+	} else {
+		for _, mode := range []string{"-hashes", "-salvage", "-watch"} {
+			_, _, exit := runTestBinary(t, mode, noperm)
+			if exit != 1 {
+				t.Errorf("%s unreadable: exit %d, want 1", mode, exit)
+			}
+		}
+	}
+	// The private-material refusal stays loud: keys present but
+	// unusable is not "nothing found". (Published BIP32 test-vector
+	// master private key, not wallet material.)
+	priv := writeGateFile(t, dir, "priv.txt",
+		"xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi\n")
+	_, stderr, exit := runTestBinary(t, "-watch", priv)
+	if exit != 1 || !strings.Contains(stderr, "private extended keys") {
+		t.Errorf("private-only watch: exit %d stderr %q, want the loud refusal", exit, firstLine(stderr))
+	}
+}
+
+// -advise routes follow-up inputs to their mode through the real
+// CLI surface (Goal 43): wallet copies to -hashes, key files to
+// -watch, EWF v1 to a scan of the image, EWF2 to the libewf pointer
+// with no Recommended line.
+func TestAdviseFollowupCLI(t *testing.T) {
+	dir := t.TempDir()
+	keystore := writeGateFile(t, dir, "wallet.json",
+		`{"address":"de0b295669a9fd93d5f28d9ec85e40f4cb697bae",`+
+			`"crypto":{"cipher":"aes-128-ctr","ciphertext":"abcd0011","kdf":"scrypt",`+
+			`"kdfparams":{"dklen":32,"n":1024,"r":8,"p":1,"salt":"aabb"},`+
+			`"mac":"ccdd"}}`)
+	mkey := append([]byte{0x30}, bytes.Repeat([]byte{0x07}, 48)...)
+	mkey = append(mkey, 0x08, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0x50, 0xC3, 0, 0)
+	mkeyPath := filepath.Join(dir, "wallet-copy.bin")
+	if err := os.WriteFile(mkeyPath, mkey, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Published BIP32 test-vector key, not wallet material.
+	keys := writeGateFile(t, dir, "keys.txt",
+		"xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB\n")
+	ewf := append([]byte{0x45, 0x56, 0x46, 0x09, 0x0d, 0x0a, 0xff, 0x00}, make([]byte, 512)...)
+	ewfPath := filepath.Join(dir, "synth.E01")
+	if err := os.WriteFile(ewfPath, ewf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ewf2 := append([]byte{0x45, 0x56, 0x46, 0x32, 0x0d, 0x0a, 0x81, 0x00}, make([]byte, 512)...)
+	ewf2Path := filepath.Join(dir, "synth.Ex01")
+	if err := os.WriteFile(ewf2Path, ewf2, 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{"keystore to hashes", keystore, "Recommended: findbtc -hashes "},
+		{"mkey to hashes", mkeyPath, "Recommended: findbtc -hashes "},
+		{"keys to watch", keys, "Recommended: findbtc -watch "},
+		{"EWF to image scan", ewfPath, "Recommended: findbtc " + ewfPath},
+	} {
+		stdout, stderr, exit := runTestBinary(t, "-advise", tc.path)
+		if exit != 0 {
+			t.Errorf("%s: exit %d (stderr: %s)", tc.name, exit, firstLine(stderr))
+			continue
+		}
+		if !strings.Contains(stdout, tc.want) {
+			t.Errorf("%s: stdout %q must hold %q", tc.name, firstLine(stdout), tc.want)
+		}
+	}
+	// The advised key file runs: -watch derives from it with exit 0.
+	if _, stderr, exit := runTestBinary(t, "-watch", keys, "-watch-count", "1"); exit != 0 {
+		t.Errorf("advised -watch exit %d (stderr: %s)", exit, firstLine(stderr))
+	}
+	// EWF2 answers with the conversion pointer and no command.
+	stdout, _, exit := runTestBinary(t, "-advise", ewf2Path)
+	if exit != 0 {
+		t.Fatalf("EWF2 advise exit %d", exit)
+	}
+	if strings.Contains(stdout, "Recommended:") {
+		t.Errorf("EWF2 advise must print no Recommended line, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "libewf") || !strings.Contains(stdout, "ewfexport") {
+		t.Errorf("EWF2 advise must point at libewf, got:\n%s", stdout)
+	}
+}
+
 // Carves that all fail to read fail the run (exit 1): zero bytes
 // scanned is blindness, not the "No token words found" success.
 func TestTokenlistAllCarvesUnreadable(t *testing.T) {
@@ -1088,16 +1219,176 @@ func TestTokenlistForeignJSONVerbatim(t *testing.T) {
 // tiny fixture announces byte offset 0 (continuing at 0%).
 func TestResumePrintsPosition(t *testing.T) {
 	dir := t.TempDir()
-	target := writeGateFile(t, dir, "target.bin", strings.Repeat("x", 100))
+	target := writeGateFile(t, dir, "target.bin", strings.Repeat("x", 10000))
+	ident, ok := detector.FileIdentityOf(target)
+	if !ok {
+		t.Skip("no byte identity on this platform")
+	}
+	identJSON, err := json.Marshal(ident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Genuine identity + mid-file offset: the frontier is
+	// honored (rewound past the overlap window to the block
+	// grid), proving resume — not rescan — prints the position.
 	ckpt := writeGateFile(t, dir, "ckpt.json",
-		fmt.Sprintf("{\"path\":%q,\"offset\":41,\"updated\":\"2026-01-01T00:00:00Z\"}\n", target))
+		fmt.Sprintf("{\"path\":%q,\"offset\":9000,\"updated\":\"2026-01-01T00:00:00Z\",\"identity\":%s}\n", target, identJSON))
 	_, stderr, exit := runTestBinary(t, "-checkpoint", ckpt, "-resume", target)
 	if exit != 0 {
 		t.Fatalf("resume exit %d (stderr: %s)", exit, firstLine(stderr))
 	}
-	if !strings.Contains(stderr, "at byte offset 0 (continuing at 0%)") {
+	if !strings.Contains(stderr, "at byte offset 4096 (continuing at 40%)") {
 		t.Errorf("resume must print byte offset and percent, stderr:\n%s", stderr)
 	}
+}
+
+// Swapped bytes must not inherit a single-target frontier: a
+// genuine journal (offset past the only needle) plus a
+// same-size, mtime-restored replacement rescans from zero and
+// reprints, instead of skipping contents never read.
+func TestResumeSwappedBytesRescan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("in-place mtime forgery is invisible to Windows stdlib identity (documented residual)")
+	}
+	dir := t.TempDir()
+	// Needle up front, bulk after: an honored offset would skip
+	// the only hit.
+	target := writeGateFile(t, dir, "target.bin", "bestblock"+strings.Repeat("z", 10000))
+	journal := filepath.Join(dir, "swap.cp")
+	stdout, stderr, exit := runTestBinary(t, "-json", "-checkpoint", journal, target)
+	if exit != 0 {
+		t.Fatalf("initial scan exit %d\n%s", exit, stderr)
+	}
+	if !strings.Contains(stdout, "bestblock") {
+		t.Fatalf("initial scan missed the needle\n%s", stdout)
+	}
+	// Same size, restored mtime, changed middle: the cheap
+	// metadata matches, so only kernel identity refuses.
+	st, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := "bestblock" + strings.Repeat("q", 10000)
+	if len(swapped) != int(st.Size()) {
+		t.Fatalf("swap fixture must preserve size: %d vs %d", len(swapped), st.Size())
+	}
+	if err := os.WriteFile(target, []byte(swapped), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(target, st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exit = runTestBinary(t, "-json", "-checkpoint", journal, "-resume", target)
+	if exit != 0 {
+		t.Fatalf("resume exit %d\n%s", exit, stderr)
+	}
+	if !strings.Contains(stderr, "rescanning from the start") {
+		t.Errorf("swapped bytes must refuse the frontier loudly, stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "bestblock") {
+		t.Errorf("swapped bytes must rescan and reprint the hit, stdout:\n%s", stdout)
+	}
+}
+
+// Resume with no readable journal restarts at zero or aborts
+// loudly (B3) — it never honors a caller suffix as verified
+// resume state. Missing journals override -s (the announcement
+// promises the beginning); malformed ones abort with a case
+// attempt record; -resume without -checkpoint stays a usage
+// error.
+func TestResumeUnreadableJournalCLI(t *testing.T) {
+	mkTarget := func(t *testing.T, dir string) string {
+		t.Helper()
+		return writeGateFile(t, dir, "target.bin", "bestblock"+strings.Repeat("z", 40000))
+	}
+	readRecords := func(t *testing.T, logPath string) []detector.CaseLog {
+		t.Helper()
+		raw, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recs []detector.CaseLog
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			var rec detector.CaseLog
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("bad case-log line %q: %s", line, err)
+			}
+			recs = append(recs, rec)
+		}
+		return recs
+	}
+	t.Run("missing journal overrides -s", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		journal := filepath.Join(dir, "absent.cp")
+		casePath := filepath.Join(dir, "case.jsonl")
+		stdout, stderr, exit := runTestBinary(t, "-json", "-s", "16384",
+			"-checkpoint", journal, "-resume", "-case-log", casePath, target)
+		if exit != 0 {
+			t.Fatalf("exit %d, want 0 (stderr:\n%s)", exit, stderr)
+		}
+		if !strings.Contains(stderr, "starting from the beginning") {
+			t.Errorf("must announce the restart, stderr:\n%s", stderr)
+		}
+		if !strings.Contains(stdout, "bestblock") {
+			t.Errorf("head needle lost: -s survived a missing journal, stdout:\n%s", stdout)
+		}
+		recs := readRecords(t, casePath)
+		if len(recs) != 1 || recs[0].Status != "complete" || recs[0].Source.StartOffset != 0 {
+			t.Errorf("case records = %+v, want one complete record at start 0", recs)
+		}
+	})
+	t.Run("malformed journal aborts with an attempt record", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		journal := writeGateFile(t, dir, "bad.cp", "{invalid")
+		casePath := filepath.Join(dir, "case.jsonl")
+		_, stderr, exit := runTestBinary(t, "-checkpoint", journal, "-resume", "-case-log", casePath, target)
+		if exit != 1 {
+			t.Fatalf("exit %d, want 1 (stderr:\n%s)", exit, stderr)
+		}
+		if !strings.Contains(stderr, "Exiting due to error") {
+			t.Errorf("must exit loudly, stderr:\n%s", stderr)
+		}
+		recs := readRecords(t, casePath)
+		if len(recs) != 1 || recs[0].Status != "error" || recs[0].Source.Kind != "unknown" || recs[0].Error == "" {
+			t.Errorf("case records = %+v, want one error attempt naming the cause", recs)
+		}
+		if recs[0].Hash.BytesHashed != 0 || recs[0].Hash.SHA256 != "" {
+			t.Errorf("attempt record invents coverage: %+v", recs[0].Hash)
+		}
+	})
+	t.Run("inaccessible journal aborts", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		journal := writeGateFile(t, dir, "noperm.cp", "{}")
+		if err := os.Chmod(journal, 0000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(journal, 0644) })
+		if f, err := os.Open(journal); err == nil {
+			f.Close()
+			t.Skip("platform reads chmod-000 files (Windows/root)")
+		}
+		_, stderr, exit := runTestBinary(t, "-checkpoint", journal, "-resume", target)
+		if exit != 1 {
+			t.Fatalf("exit %d, want 1 (stderr:\n%s)", exit, stderr)
+		}
+		if !strings.Contains(stderr, "Exiting due to error") {
+			t.Errorf("must exit loudly, stderr:\n%s", stderr)
+		}
+	})
+	t.Run("resume without a checkpoint path is a usage error", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		_, stderr, exit := runTestBinary(t, "-resume", target)
+		if exit == 0 {
+			t.Fatalf("exit 0, want nonzero (stderr:\n%s)", stderr)
+		}
+		if !strings.Contains(stderr, "-resume requires -checkpoint") {
+			t.Errorf("must name the missing flag, stderr:\n%s", stderr)
+		}
+	})
 }
 
 // The doc-commands contract (Goal 33): every ```sh line in
@@ -1773,5 +2064,52 @@ func TestFlagsBeforeTargets(t *testing.T) {
 	_, _, exit = runTestBinaryDir(t, dir, "-json", "-dash.bin")
 	if exit != 2 {
 		t.Errorf("bare dash filename exit %d, want 2 (flag parse must fail)", exit)
+	}
+}
+
+// A batch run journals per-target digests; the -resume rerun
+// skips both targets without re-scanning, and a tampered target
+// rescans loudly instead of skipping.
+func TestBatchCheckpointResumeCLI(t *testing.T) {
+	dir := t.TempDir()
+	a := writeGateFile(t, dir, "a.bin", strings.Repeat("q", 5000)+"bestblock"+strings.Repeat("q", 5000))
+	b := writeGateFile(t, dir, "b.bin", strings.Repeat("q", 5000)+"defaultkey"+strings.Repeat("q", 5000))
+	ckpt := filepath.Join(dir, "batch.cp")
+	_, stderr, exit := runTestBinary(t, "-checkpoint", ckpt, a, b)
+	if exit != 0 {
+		t.Fatalf("batch run exit %d:\n%s", exit, stderr)
+	}
+	stdout, stderr, exit := runTestBinary(t, "-checkpoint", ckpt, "-resume", a, b)
+	if exit != 0 {
+		t.Fatalf("batch resume exit %d:\n%s", exit, stderr)
+	}
+	if strings.Count(stderr, "batch: skipping") != 2 {
+		t.Errorf("resume must skip both targets, stderr:\n%s", stderr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("skipped resume must print no hits:\n%s", stdout)
+	}
+	// Tamper target B (same size): the next resume rescans it
+	// loudly while still skipping A.
+	raw, err := os.ReadFile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[100] ^= 0xff
+	if err := os.WriteFile(b, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exit = runTestBinary(t, "-checkpoint", ckpt, "-resume", a, b)
+	if exit != 0 {
+		t.Fatalf("tampered resume exit %d:\n%s", exit, stderr)
+	}
+	if strings.Count(stderr, "batch: skipping") != 1 || !strings.Contains(stderr, "skipping "+a) {
+		t.Errorf("tampered resume must skip only A, stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "fails digest verification") && !strings.Contains(stderr, "changed since completion") {
+		t.Errorf("tampered target must warn loudly, stderr:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "defaultkey") {
+		t.Errorf("rescan must re-report B hits:\n%s", stdout)
 	}
 }
