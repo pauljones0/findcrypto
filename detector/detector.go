@@ -315,6 +315,14 @@ type Options struct {
 	// sequential range pipelines of one ScanRangesWithOptions
 	// call; set by the range driver, never by callers.
 	rangeProofs *rangeProofAcc
+	// onRange, when non-nil, fires with each range's index as its
+	// pipeline starts. Set by in-package range callers that stamp
+	// detections by range (ScanFSVolumes); nil callers see no
+	// behavior change. Ranges scan sequentially and every range's
+	// detections are delivered before the next range starts, so the
+	// hook names the range a detection arrived from even when
+	// ranges overlap (offset search cannot).
+	onRange func(index int)
 }
 
 // rangeProofAcc accumulates completed-range proofs across one
@@ -736,6 +744,9 @@ func ScanRangesWithOptions(path string, ranges []FSExtent, opts Options, onDetec
 		}
 		if i == startIdx && active != nil {
 			ropts.runResume = active
+		}
+		if opts.onRange != nil {
+			opts.onRange(i)
 		}
 		if err := runPipeline(t, ropts, onDetection, onProgress); err != nil {
 			return err
@@ -1509,8 +1520,12 @@ type journalCtl struct {
 	// writes it on clean EOF only: EOF delivery already proves
 	// every byte delivered, while error/cancel paths keep the
 	// older proven mark instead of certifying doubt. Buffered
-	// one: the root ends once, so the send never blocks, and a
-	// clean-EOF return always finds it (sent before the EOF).
+	// one: the root ends once, so the send never blocks.
+	// Exactly one send per run (nil when the root never opened):
+	// the read pushes EOF downstream before returning, so a
+	// clean EOF can arrive first and runPipeline waits for the
+	// frontier before returning success — every successful
+	// completed target files its receipt.
 	final chan *pendingFrontier
 	// digest streams the root bytes of every checkpointed scan
 	// for prefix proofs and (under a batch journal) the manifest
@@ -1983,12 +1998,8 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 				signal = fmt.Errorf("incomplete coverage: skipped %d nested targets past the %d publication cap; retry to recover", n, maxOutstandingPubs)
 			}
 		}
-		if rec != nil {
-			status, runErr := "complete", error(nil)
-			if signal != io.EOF {
-				status, runErr = "error", signal
-			}
-			if err := appendCaseLog(opts.CaseLogPath, rec.finish(status, runErr)); err != nil {
+		if rec != nil && signal != io.EOF {
+			if err := appendCaseLog(opts.CaseLogPath, rec.finish("error", signal)); err != nil {
 				return fmt.Errorf("case log: %w", err)
 			}
 		}
@@ -2002,23 +2013,7 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 			opts.logf("[scan] WARNING: %s changed during the scan; output may mix bytes (resume re-verifies)\n", seed.Describe())
 		}
 		if signal == io.EOF {
-			// Clean EOF proves every byte delivered (final-EOF
-			// forwarding implies every published target was
-			// read and every block processed), so the
-			// completion frontier is safe to journal now.
-			// Error paths keep the older proven mark
-			// instead of certifying doubt.
-			if jc != nil {
-				select {
-				case ff := <-jc.final:
-					// Completion subsumes banking: drop the
-					// covered list instead of filing it.
-					ff.covered = nil
-					writeFrontier(opts, ff)
-				default:
-				}
-			}
-			return nil
+			return finishCompletedScan(userCtx, opts, jc, rec)
 		}
 		if jc != nil {
 			// Banked members must survive the error return or
@@ -2053,13 +2048,46 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 		}
 		return signal
 	case <-userCtx.Done():
-		if rec != nil {
-			if err := appendCaseLog(opts.CaseLogPath, rec.finish("canceled", userCtx.Err())); err != nil {
-				return fmt.Errorf("case log: %w", err)
-			}
-		}
-		return userCtx.Err()
+		return finishCanceledScan(userCtx, opts, rec)
 	}
+}
+
+// finishCompletedScan runs only after clean EOF proves that every admitted
+// block was delivered. The reader can still be preparing the root frontier,
+// so resolve that wait before writing a complete case record. Cancellation
+// while it is pending follows the same path as cancellation during scanning:
+// return the context error, record canceled, and leave the old journal alone.
+func finishCompletedScan(ctx context.Context, opts Options, jc *journalCtl, rec *caseRecorder) error {
+	var final *pendingFrontier
+	if jc != nil {
+		select {
+		case final = <-jc.final:
+			// Exactly one buffered send per root, nil if it never opened.
+		case <-ctx.Done():
+			return finishCanceledScan(ctx, opts, rec)
+		}
+	}
+	if rec != nil {
+		if err := appendCaseLog(opts.CaseLogPath, rec.finish("complete", nil)); err != nil {
+			return fmt.Errorf("case log: %w", err)
+		}
+	}
+	if final != nil {
+		// Completion subsumes banking. Journal write failures retain the
+		// existing warn-and-continue policy rather than losing delivered hits.
+		final.covered = nil
+		writeFrontier(opts, final)
+	}
+	return nil
+}
+
+func finishCanceledScan(ctx context.Context, opts Options, rec *caseRecorder) error {
+	if rec != nil {
+		if err := appendCaseLog(opts.CaseLogPath, rec.finish("canceled", ctx.Err())); err != nil {
+			return fmt.Errorf("case log: %w", err)
+		}
+	}
+	return ctx.Err()
 }
 
 func scanBlocks(ctx context.Context, targets chan scanTarget, emptyBlocks chan *Block, out chan *Block,
@@ -2083,12 +2111,8 @@ func scanBlocks(ctx context.Context, targets chan scanTarget, emptyBlocks chan *
 		if !alive {
 			return
 		}
-		if !isRoot && outcome.opened {
-			// Banked only once fully read: coverKeyOf() is
-			// stable across resumes of the same input, so
-			// the key re-identifies this member next run.
-			gate.bankCovered(target)
-		}
+		// Nested banking happens inside readTarget, before
+		// the member EOF queues (see pushEOF).
 		if isRoot && opts.strictRoot {
 			// The root promised bytes but yielded none (vanished
 			// mid-run, fully unreadable): that is a failed scan,
@@ -2101,7 +2125,17 @@ func scanBlocks(ctx context.Context, targets chan scanTarget, emptyBlocks chan *
 			}
 			rootDone <- outcome.rootErr
 		}
-		if isRoot && jc != nil && outcome.opened {
+		if isRoot && jc != nil {
+			// Exactly one send per run, frontier or nil: the
+			// read pushed EOF downstream before returning, so
+			// runPipeline may already wait for this send (it
+			// blocks for it on clean EOF). An unopened root
+			// sends nil — no bytes, no frontier — so the
+			// receiver never hangs on a missing send.
+			if !outcome.opened {
+				jc.final <- nil
+				continue
+			}
 			// The completion frontier supersedes any 1MB point;
 			// runPipeline writes it on clean EOF, when delivery
 			// is proven. A clean full span — fresh from the
@@ -2165,6 +2199,19 @@ func readTarget(ctx context.Context, targets chan scanTarget, emptyBlocks chan *
 	// Every target yields exactly one EOF unless canceled; the
 	// stages' publish/consume balance depends on it.
 	pushEOF := func() bool {
+		// Bank before the EOF queues: downstream EOF proves
+		// delivery, and the error path snapshots banking after
+		// final EOF — so a reported member must already be
+		// banked here, or a retry replays it (exactly-once
+		// violation). Banked only once fully read:
+		// coverKeyOf() is stable across resumes of the same
+		// input, so the key re-identifies this member next
+		// run. Roots never bank; unopened and canceled reads
+		// bank nothing (canceled returns bypass this
+		// closure entirely).
+		if !isRoot && outcome.opened {
+			gate.bankCovered(target)
+		}
 		select {
 		case <-ctx.Done():
 			return false
@@ -2421,13 +2468,12 @@ func drainFrontier(ctx context.Context, targets chan scanTarget, emptyBlocks cha
 				return false
 			case nested := <-targets:
 				gate.consumed()
-				nestedOutcome, alive := readTarget(ctx, targets, emptyBlocks, out, onProgress, opts, jc, gate, nested, false)
+				_, alive := readTarget(ctx, targets, emptyBlocks, out, onProgress, opts, jc, gate, nested, false)
 				if !alive {
 					return false
 				}
-				if nestedOutcome.opened {
-					gate.bankCovered(nested)
-				}
+				// Banking happens inside readTarget, before
+				// the member EOF queues (see pushEOF).
 			default:
 				drained = true
 			}

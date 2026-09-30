@@ -11,7 +11,7 @@ complete -c findbtc -o context -r -d 'Bytes carved before and after each hit (on
 complete -c findbtc -o dfxml -r -d 'Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning'
 complete -c findbtc -o extract-dir -r -d 'Carve bytes around each hit into DIR/hit-NNNNNN.bin plus a .json sidecar (never on the scanned device itself)'
 complete -c findbtc -o fail-on-hit -d 'Exit 3 when the scan or report finds anything (for CI gates and pre-commit hooks); without it, finding hits still exits 0'
-complete -c findbtc -o fs -r -d 'Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT volume in FILE and scan their content'
+complete -c findbtc -o fs -r -d 'Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT/XFS volume in FILE and scan their content'
 complete -c findbtc -o fs-offset -r -d 'Byte offset of the volume boot sector inside FILE (only with -fs and -unallocated-only); when omitted, the partition table is followed automatically'
 complete -c findbtc -o gen-completion -r -d 'Write a shell completion script for bash, zsh, or fish to stdout and exit (generated from the flag table; scan inputs still refuse)'
 complete -c findbtc -o gen-man -d 'Write the findbtc man page (troff) to stdout and exit (OPTIONS generated from the flag table; scan inputs still refuse)'

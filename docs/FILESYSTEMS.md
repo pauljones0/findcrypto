@@ -2,7 +2,7 @@
 
 Raw scanning finds wallet traces anywhere, but it loses filenames, wastes
 time on live data, and cannot tell a deleted file from noise. The
-filesystem layer reads NTFS, ext, FAT, and exFAT metadata so
+filesystem layer reads NTFS, ext, FAT, exFAT, and XFS metadata so
 deleted-but-referenced files come back **with their names**, and raw
 scans can skip everything still allocated.
 
@@ -20,7 +20,7 @@ Scan only free space (deleted content, no filenames):
 `-fs-offset` pins one volume boot sector by hand (concatenated
 evidences, hand-verified layouts). When it is omitted, MBR and GPT
 partition tables are followed automatically: every partition that opens
-as NTFS/ext/FAT/exFAT is scanned, so a full-disk capture needs no manual
+as NTFS/ext/FAT/exFAT/XFS is scanned, so a full-disk capture needs no manual
 offset. Partitions are probed by content, not by type byte (MBR type
 0x07 covers NTFS, exFAT, and more).
 Hybrid MBR+GPT layouts, corrupt tables, and disks with no supported
@@ -63,6 +63,27 @@ unallocated-only.
 file/stream/name entry sets. Deleted entries keep their full names
 (InUse bits only), and files written with NoFATChain recover whole
 even with a zeroed FAT. The allocation bitmap drives unallocated-only.
+
+**XFS** (v4 no-crc and v5 crc layouts) reads the superblock, the
+per-AG headers, and the freespace (bnobt) and inode (inobt) B+trees.
+Unlinked inodes (link count 0) yield content from inline, extent, or
+bmbt file maps; names come from live and unlinked shortform
+directories, and orphan content with no surviving name is stamped
+`inode:N`. The bnobt plus the AGFL stash window drive
+unallocated-only — exactly the set `xfs_db freesp` reports. Honest
+edges: a corrupt bnobt aborts instead of guessing coverage; a
+shortform that will not validate drops that directory's names while
+its files' content still comes back from the chunk scan; directories
+in block or btree format contribute no names (same content fallback).
+Sector-sized AG headers, encoded block numbers across AGs, attribute
+forks, and partially filled internal tree nodes are covered by regression
+tests. Hand-built v4/v5 fixtures are cross-checked with real `xfs_db`
+(`TestXFSOracleCrossCheck`), and `mkfs.xfs` supplies a real 4 KiB-sector,
+three-AG image. These checks run in Linux CI; locally they need xfsprogs.
+Unwritten preallocation is excluded from file content. Realtime volumes
+and incompatible features beyond ftype, sparse inodes, metadata UUIDs,
+and bigtime are refused. Metadata checksums and the transaction log are
+not verified or replayed by the parser; scan a consistent image.
 
 **Out of scope:** APFS; RAID rebuild; double/triple-indirect ext blocks;
 compressed/encrypted/sparse NTFS content (parsed structurally, read back

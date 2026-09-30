@@ -276,6 +276,63 @@ func TestScanFSVolumesMultiVolumeNoRangesNoJournal(t *testing.T) {
 	}
 }
 
+// The range index owns the stamp, not offset containment: a needle
+// inside two overlapping ranges attributes to the range being
+// scanned. (Unreachable via FS parsers — extents are
+// volume-confined — but the flattened list must stay exact if that
+// ever changes.) Wired exactly like ScanFSVolumes wires it.
+func TestScanFSVolumesOverlapStampsByIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overlap.bin")
+	buf := make([]byte, 4096)
+	copy(buf[160:], "bestblock")
+	if err := os.WriteFile(path, buf, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ranges := []FSExtent{{Start: 100, Len: 100}, {Start: 150, Len: 100}}
+	ro := &rangeOwner{ranges: ranges, owners: []string{"vol1file", "vol2file"}, cur: -1}
+	var fired []int
+	inner := ro.onRange
+	opts := Options{onRange: func(i int) {
+		fired = append(fired, i)
+		inner(i)
+	}}
+	var dets []Detection
+	if err := ScanRangesWithOptions(path, ranges, opts, func(d Detection) {
+		d.FileName = ro.ownerOf(d.Offset)
+		dets = append(dets, d)
+	}, func(ProgressInfo) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fired) != 2 || fired[0] != 0 || fired[1] != 1 {
+		t.Fatalf("onRange fired %v, want [0 1]", fired)
+	}
+	if len(dets) != 2 {
+		t.Fatalf("%d detections, want the overlap needle twice: %v", len(dets), dets)
+	}
+	if dets[0].FileName != "vol1file" || dets[1].FileName != "vol2file" {
+		t.Errorf("owners %q,%q, want vol1file then vol2file: %+v",
+			dets[0].FileName, dets[1].FileName, dets)
+	}
+}
+
+// rangeOwner unit contract: the started index wins over containment;
+// with no range started the offset search is the fallback.
+func TestRangeOwnerIndexWins(t *testing.T) {
+	ranges := []FSExtent{{Start: 100, Len: 100}, {Start: 150, Len: 100}}
+	ro := &rangeOwner{ranges: ranges, owners: []string{"a", "b"}, cur: -1}
+	if got := ro.ownerOf(160); got != "a" {
+		t.Errorf("fallback ownerOf(160) = %q, want a", got)
+	}
+	ro.onRange(1)
+	if got := ro.ownerOf(160); got != "b" {
+		t.Errorf("indexed ownerOf(160) = %q, want b", got)
+	}
+	if got := ro.ownerOf(9999); got != "b" {
+		t.Errorf("indexed ownerOf(outside) = %q, want b", got)
+	}
+}
+
 // Case-log records stay per scanned range in flattened volume order —
 // exactly what the sequential per-volume runs wrote — and verify
 // agrees with every record.

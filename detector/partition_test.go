@@ -417,7 +417,7 @@ func TestResolveVolumesLoudErrors(t *testing.T) {
 	}
 	if _, err := resolveVolumes(rawPath, 0, true); err == nil {
 		t.Error("raw-only table with auto-seed must error")
-	} else if !strings.Contains(err.Error(), "none opens as NTFS/ext/FAT/exFAT") || !strings.Contains(err.Error(), "mbr-type-da") {
+	} else if !strings.Contains(err.Error(), "none opens as NTFS/ext/FAT/exFAT/XFS") || !strings.Contains(err.Error(), "mbr-type-da") {
 		t.Errorf("raw-only error must list the layout tried: %v", err)
 	}
 	disk, _ := composeDisk(t, "mbr")

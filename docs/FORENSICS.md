@@ -54,7 +54,7 @@ Supported inputs, detected automatically:
 - **Split raw** (`base.001`, `base.002`, …): concatenated and scanned
   as one stream; any segment may be named on the command line.
 - **Raw** devices and files, as before.
-- **Filesystem-guided** (`-fs`, `-unallocated-only`): NTFS/ext
+- **Filesystem-guided** (`-fs`, `-unallocated-only`): NTFS/ext/FAT/exFAT/XFS
   inventories and range scans; each range appends its own case-log
   record.
 

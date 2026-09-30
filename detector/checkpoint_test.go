@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -317,6 +318,42 @@ func TestRangeCheckpointFreshRun(t *testing.T) {
 	}
 }
 
+// Every successful completed run durably files its completion
+// frontier before returning: the journal is the run's receipt, and
+// a success that journals nothing (or a stale point) strands the
+// run's proof — the next resume re-scans instead of skipping. Each
+// of these tiny runs must file its own receipt; the loop fails
+// fast on the first miss (a retry-until-pass here would mask the
+// EOF/frontier race this test pins).
+func TestCompletionFrontierReceipt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tiny.bin")
+	if err := os.WriteFile(path, []byte("bestblock"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		ckpt := filepath.Join(dir, fmt.Sprintf("c%d.json", i))
+		var dets int
+		if err := ScanWithOptions(0, path, Options{CheckpointPath: ckpt},
+			func(Detection) { dets++ }, func(ProgressInfo) {}); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if dets != 1 {
+			t.Fatalf("run %d: %d detections, want 1", i, dets)
+		}
+		cp, err := ReadCheckpoint(ckpt)
+		if err != nil {
+			t.Fatalf("run %d filed no journal: %v", i, err)
+		}
+		if cp.Offset != 9 {
+			t.Fatalf("run %d journal at offset %d, want completion 9", i, cp.Offset)
+		}
+		if cp.Proof == nil {
+			t.Fatalf("run %d journal lacks its content proof", i)
+		}
+	}
+}
+
 // A checkpointed -fs run over auto-seeded volumes journals ONE
 // flattened deleted-entry range list spanning every volume (the
 // unallocated precedent): the old cross-volume refusal is gone, the
@@ -405,7 +442,12 @@ func TestScanFSVolumesMultiVolumeKillResume(t *testing.T) {
 		}
 		collectFS := func(opts Options) []Detection {
 			var dets []Detection
-			if _, err := ScanFSVolumes(disk, 0, true, opts, stamp(&dets),
+			// Production FileName retained: the union-vs-cold
+			// comparison must prove the resumed production
+			// stamp, not the test's ownership map (which
+			// only the raw prefix scan below needs).
+			if _, err := ScanFSVolumes(disk, 0, true, opts,
+				func(d Detection) { dets = append(dets, d) },
 				func(ProgressInfo) {}, func(string, FSEntry) {}); err != nil {
 				t.Fatalf("%s: fs scan: %v", scheme, err)
 			}
