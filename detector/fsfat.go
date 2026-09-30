@@ -334,7 +334,9 @@ func lfnDecode(units []uint16) (name string, ok bool) {
 // Every slot's checksum byte must agree with the rest of the run: a
 // disagreeing slot means partial overwrite, and the run is refused
 // rather than truncated (fls reports a mid-word truncation there; an
-// honest '?' short beats a half-name that looks complete).
+// honest '?' short beats a half-name that looks complete). Intact
+// slots whose sequence number or last-slot flag contradicts the
+// positional expectation refuse the same way, for the same reason.
 //
 // The short-entry checksum is deliberately NOT verified: it covers the
 // destroyed first byte, so exactly one first-byte value always

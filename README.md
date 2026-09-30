@@ -369,7 +369,7 @@ scans deleted files' content with filenames stamped on every hit, while
     findbtc -unallocated-only /dev/sdb1
 
 For full-disk captures, omit `-fs-offset` and the MBR/GPT partition
-table is followed automatically (every NTFS/ext/FAT/exFAT partition is scanned);
+table is followed automatically (every NTFS/ext/FAT/exFAT/XFS partition is scanned);
 pass `-fs-offset` only to pin one volume boot sector by hand.
 Range scans take `-checkpoint`/`-resume` too: the journal records
 `(range_index, offset)`, and resume refuses loudly if the volume's
