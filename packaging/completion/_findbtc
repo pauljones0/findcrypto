@@ -13,7 +13,7 @@ _arguments -s -S \
   '-dfxml[Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning]:value:_files' \
   '-extract-dir[Carve bytes around each hit into DIR/hit-NNNNNN.bin plus a .json sidecar (never on the scanned device itself)]:value:_files' \
   '-fail-on-hit[Exit 3 when the scan or report finds anything (for CI gates and pre-commit hooks); without it, finding hits still exits 0]' \
-  '-fs[Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT volume in FILE and scan their content]:value:_files' \
+  '-fs[Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT/XFS volume in FILE and scan their content]:value:_files' \
   '-fs-offset[Byte offset of the volume boot sector inside FILE (only with -fs and -unallocated-only); when omitted, the partition table is followed automatically]:value:_files' \
   '-gen-completion[Write a shell completion script for bash, zsh, or fish to stdout and exit (generated from the flag table; scan inputs still refuse)]:value:_files' \
   '-gen-man[Write the findbtc man page (troff) to stdout and exit (OPTIONS generated from the flag table; scan inputs still refuse)]' \

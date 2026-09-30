@@ -62,7 +62,7 @@ Carve bytes around each hit into DIR/hit\-NNNNNN.bin plus a .json sidecar (never
 Exit 3 when the scan or report finds anything (for CI gates and pre\-commit hooks); without it, finding hits still exits 0
 .TP
 .B \-fs
-Filesystem\-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT volume in FILE and scan their content
+Filesystem\-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT/XFS volume in FILE and scan their content
 .TP
 .B \-fs\-offset
 Byte offset of the volume boot sector inside FILE (only with \-fs and \-unallocated\-only); when omitted, the partition table is followed automatically (default 0)

@@ -133,13 +133,16 @@ never scans:
 
     findbtc -advise /dev/sda
 
+Key-file advice lists validated public-key versions and fingerprints.
+Malformed keys keep the raw-scan recommendation.
+
 Detections print to stdout; logs, progress and the final `[COMPLETE]` line go
 to stderr, so `-json` output stays parseable. Exit codes are a contract:
 
 | Code | Meaning |
 | ---- | ------- |
 | 0 | The run completed and covered its target — hits or not. A `-walk` that scanned at least one file, or a multi-target run that scanned at least one target, exits 0 even when others failed (failures print loudly with a `WARNING`). |
-| 0 | Follow-up modes (`-hashes`, `-salvage`, `-tokenlist`, `-watch`, `-report`) exit 0 on readable-but-empty input (`No ... found` on stdout): a completed run with nothing found is not an error. Missing or unreadable input still exits 1. |
+| 0 | Follow-up modes (`-report`, `-hashes`, `-tokenlist`, `-salvage`, `-watch`) report readable-but-empty input on stdout and exit 0 — for example `No extended public keys in FILE`. Only missing or unreadable input exits 1. |
 | 1 | Runtime error or zero coverage: the root target could not be read (missing, unreadable, vanished mid-run), or a `-walk` / multi-target run scanned nothing at all. The reason is on stderr. |
 | 2 | Bad flags/usage. |
 | 3 | Hits found — but only with `-fail-on-hit`, which gates CI and pre-commit hooks (see [docs/SECRETS_PROFILE.md](docs/SECRETS_PROFILE.md)). |
@@ -369,7 +372,7 @@ scans deleted files' content with filenames stamped on every hit, while
     findbtc -unallocated-only /dev/sdb1
 
 For full-disk captures, omit `-fs-offset` and the MBR/GPT partition
-table is followed automatically (every NTFS/ext/FAT/exFAT partition is scanned);
+table is followed automatically (every NTFS/ext/FAT/exFAT/XFS partition is scanned);
 pass `-fs-offset` only to pin one volume boot sector by hand.
 Range scans take `-checkpoint`/`-resume` too: the journal records
 `(range_index, offset)`, and resume refuses loudly if the volume's

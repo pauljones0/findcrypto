@@ -92,18 +92,27 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	scan := func(cap int64, start int64, cpPath, clPath string) (keys map[string]bool, err error, log string) {
+	// Nested hits only (Target != path): whether fixture bytes
+	// leak a literal needle into a raw stream depends on the Go
+	// flate encoder version, but the banking contract concerns
+	// nested members only. Filtering keeps counts exact on every
+	// toolchain.
+	scan := func(cap int64, start int64, cpPath, clPath string) (keys map[string]bool, log string, err error) {
 		maxOutstandingPubs = cap
 		keys = map[string]bool{}
 		var lb bytes.Buffer
 		err = ScanWithOptions(start, path, Options{
 			Log: &lb, CheckpointPath: cpPath, CaseLogPath: clPath,
-		}, func(d Detection) { keys[pubgateDetKey(d)] = true }, func(ProgressInfo) {})
-		return keys, err, lb.String()
+		}, func(d Detection) {
+			if d.Target != path {
+				keys[pubgateDetKey(d)] = true
+			}
+		}, func(ProgressInfo) {})
+		return keys, lb.String(), err
 	}
 
 	// Baseline: uncongested, recovery finds all 10.
-	bkeys, berr, blog := scan(100, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"))
+	bkeys, blog, berr := scan(100, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"))
 	if berr != nil {
 		t.Fatalf("baseline scan: %v\n%s", berr, blog)
 	}
@@ -118,7 +127,7 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 	// nonzero-floor assertion: a no-drop journal may honestly
 	// freeze at 0 when nothing past the start is proven.)
 	cpPath, clPath := filepath.Join(dir, "cong.cp"), filepath.Join(dir, "cong.log")
-	ckeys, cerr, clog := scan(3, 0, cpPath, clPath)
+	ckeys, clog, cerr := scan(3, 0, cpPath, clPath)
 	if cerr == nil || !strings.Contains(cerr.Error(), "incomplete coverage") {
 		t.Fatalf("congested scan error = %v, want incomplete-coverage error\n%s", cerr, clog)
 	}
@@ -143,7 +152,11 @@ func TestPubGateFlushSkipRetryRecovers(t *testing.T) {
 	rkeys := map[string]bool{}
 	rerr := ScanWithOptions(cp.Offset, path, Options{
 		Log: &rlog, CheckpointPath: cpPath, CaseLogPath: filepath.Join(dir, "retry.log"),
-	}, func(d Detection) { rkeys[pubgateDetKey(d)] = true }, func(ProgressInfo) {})
+	}, func(d Detection) {
+		if d.Target != path {
+			rkeys[pubgateDetKey(d)] = true
+		}
+	}, func(ProgressInfo) {})
 	rlogs := readCaseLog(t, filepath.Join(dir, "retry.log"))
 	rstatus := ""
 	if len(rlogs) != 0 {
