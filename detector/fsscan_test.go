@@ -231,6 +231,92 @@ func TestScanFSVolumesSingleVolumeCheckpointRoundTrip(t *testing.T) {
 	}
 }
 
+// A multi-volume run with no deleted ranges anywhere journals nothing:
+// flattening an empty list is not a journalable run.
+func TestScanFSVolumesMultiVolumeNoRangesNoJournal(t *testing.T) {
+	disk, starts := composeMixedDisk(t, "mbr")
+	raw, err := os.ReadFile(disk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Relink ext's deleted inodes (volume 2): live entries inventory
+	// but never scan.
+	for _, num := range []int64{13, 14, 15, 16} {
+		at := starts[1] + 4*extTestBlock + (num-1)*128 + 26
+		raw[at], raw[at+1] = 1, 0
+	}
+	// End the FAT32 root walk at the first deleted slot (volume 1).
+	g := fat32Geometry()
+	root := starts[0] + g.clustOff(2)
+	for slot := int64(0); ; slot++ {
+		s := raw[root+slot*32 : root+(slot+1)*32]
+		if s[0] == 0x00 {
+			break
+		}
+		if s[0] == 0xE5 {
+			s[0] = 0x00
+			break
+		}
+	}
+	if err := os.WriteFile(disk, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ckpt := filepath.Join(t.TempDir(), "c.json")
+	kinds, err := ScanFSVolumes(disk, 0, true, Options{CheckpointPath: ckpt},
+		func(d Detection) { t.Errorf("range-less run detected %+v", d) },
+		func(ProgressInfo) {}, func(string, FSEntry) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kinds) != 2 {
+		t.Fatalf("kinds %v, want both volumes inventoried", kinds)
+	}
+	if _, err := os.Stat(ckpt); !os.IsNotExist(err) {
+		t.Errorf("range-less multi-volume run journaled: stat err %v", err)
+	}
+}
+
+// Case-log records stay per scanned range in flattened volume order —
+// exactly what the sequential per-volume runs wrote — and verify
+// agrees with every record.
+func TestScanFSVolumesMultiVolumeCaseLog(t *testing.T) {
+	disk, _ := composeDisk(t, "mbr")
+	targets, err := resolveVolumes(disk, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ranges, _, err := flattenDeletedRanges(disk, targets, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "case.jsonl")
+	if _, err := ScanFSVolumes(disk, 0, true,
+		Options{CaseLogPath: logPath, ToolVersion: "test"},
+		func(Detection) {}, func(ProgressInfo) {}, func(string, FSEntry) {}); err != nil {
+		t.Fatal(err)
+	}
+	recs := readCaseLog(t, logPath)
+	if len(recs) != len(ranges) {
+		t.Fatalf("%d case-log records, want one per range (%d)", len(recs), len(ranges))
+	}
+	for i, r := range recs {
+		if r.Status != "complete" {
+			t.Errorf("record %d status %q, want complete", i, r.Status)
+		}
+		if r.Source.Kind != "range" {
+			t.Errorf("record %d kind %q, want range", i, r.Source.Kind)
+		}
+		if r.Source.StartOffset != ranges[i].Start || r.Source.Size != ranges[i].Start+ranges[i].Len {
+			t.Errorf("record %d covers [%d,%d), want range %+v",
+				i, r.Source.StartOffset, r.Source.Size, ranges[i])
+		}
+	}
+	var out strings.Builder
+	if err := VerifyCaseLog(logPath, &out); err != nil {
+		t.Errorf("verify: %v\n%s", err, out.String())
+	}
+}
+
 func TestReportShowsFileName(t *testing.T) {
 	d := Detection{Description: "x", Needle: "bestblock", Offset: 9, Target: "img",
 		BlockOffset: 0, MatchLen: 9, FileName: "wallet.dat"}
