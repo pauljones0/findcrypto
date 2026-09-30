@@ -27,7 +27,8 @@ func NewBatchManifest(targets []string, run BatchRun) *BatchManifest {
 	m := &BatchManifest{Run: run}
 	for _, t := range targets {
 		size, mtime := BatchIdentity(t)
-		m.Targets = append(m.Targets, BatchTarget{Path: t, Size: size, Mtime: mtime, State: BatchPending})
+		ident, _ := FileIdentityOf(t)
+		m.Targets = append(m.Targets, BatchTarget{Path: t, Size: size, Mtime: mtime, Ident: ident, State: BatchPending})
 	}
 	return m
 }
@@ -81,7 +82,9 @@ func matchBatchRun(have, want BatchRun) error {
 
 // BatchIdentityMatches reports whether a fresh stat still matches
 // the journaled identity: unknown journaled identity (-1, 0)
-// never matches, so such entries always rescan.
+// never matches, so such entries always rescan. Cheap tier only —
+// same-size rewrites with restored mtimes match here and must be
+// decided by digest re-hash or proof verification.
 func BatchIdentityMatches(t BatchTarget, size, mtime int64) bool {
 	if t.Size < 0 || t.Mtime == 0 {
 		return false
@@ -90,9 +93,14 @@ func BatchIdentityMatches(t BatchTarget, size, mtime int64) bool {
 }
 
 // VerifyBatchDigest re-hashes the first size bytes of path and
-// compares against the manifest digest. Any error — unreadable
-// file, short read, mismatch — fails safe: the caller rescans,
-// never skips.
+// compares against the manifest digest, on one handle with the
+// source's stability checked before and after the read. Any error
+// — unreadable file, short read, mismatch, movement under the
+// read — fails safe: the caller rescans, never skips. The
+// stability check catches ordinary concurrent writes; a writer
+// that lands inside the read window on a coarse-clock filesystem
+// without changing size is the documented residual (see
+// identity.go) — quiesce writers during scans that must skip.
 func VerifyBatchDigest(path string, size int64, want string) error {
 	if want == "" {
 		return fmt.Errorf("no digest journaled")
@@ -102,6 +110,7 @@ func VerifyBatchDigest(path string, size int64, want string) error {
 		return err
 	}
 	defer f.Close()
+	preFi, preAtt, preOK := FileIdentityOfFile(f)
 	h := sha256.New()
 	n, err := io.CopyN(h, f, size)
 	if err != nil {
@@ -110,8 +119,31 @@ func VerifyBatchDigest(path string, size int64, want string) error {
 	if n != size {
 		return fmt.Errorf("verify short: %d of %d bytes", n, size)
 	}
+	if err := verifyStable(f, preFi, preAtt, preOK); err != nil {
+		return err
+	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
 		return fmt.Errorf("digest mismatch")
+	}
+	return nil
+}
+
+// verifyStable reports whether f still names the bytes the caller
+// started reading: full identity match on attested regular files,
+// node-plus-size-plus-mtime on the rest (content itself is proven
+// by the digest; this only guards the read window).
+func verifyStable(f *os.File, preFi os.FileInfo, preAtt FileIdentity, preOK bool) error {
+	postFi, postAtt, postOK := FileIdentityOfFile(f)
+	if preOK && postOK {
+		if !preAtt.Matches(postAtt) {
+			return fmt.Errorf("source changed during verification")
+		}
+		return nil
+	}
+	if preOK != postOK || preFi == nil || postFi == nil ||
+		!os.SameFile(preFi, postFi) || preFi.Size() != postFi.Size() ||
+		!preFi.ModTime().Equal(postFi.ModTime()) {
+		return fmt.Errorf("source changed during verification")
 	}
 	return nil
 }
