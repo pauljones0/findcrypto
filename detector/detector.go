@@ -228,10 +228,19 @@ type Options struct {
 	// CheckpointPath, when non-empty, journals root-target progress to the
 	// file every 1MB and on completion, so an interrupted scan can resume.
 	CheckpointPath string
-	// Resume continues a range scan (ScanRangesWithOptions) from the
-	// CheckpointPath journal instead of starting over. Single-target
-	// resume is handled by the caller (read the journal, pass the
-	// offset); this flag is ignored outside range scans.
+	// Resume resumes from the CheckpointPath journal instead of
+	// starting over. Range scans (ScanRangesWithOptions) continue
+	// inside the detector; whole-file scans restart at zero with
+	// a warning when the run start continues no journal point
+	// (instead of honoring an explicit caller start). A missing,
+	// unreadable, or malformed journal — or no journal path at
+	// all — warns under Resume and restarts a nonzero start at
+	// zero; it never silently authorizes a caller skip. Refused
+	// journal points — missing, foreign, or short proofs, failed
+	// cheap tier or proof verification — restart at zero with a
+	// warning whether or not Resume is set. Single-target resume
+	// stays caller-driven (read the journal, pass the offset);
+	// Resume only changes what a non-continuing start means.
 	Resume bool
 	// Profile selects the detector set: "" (or "default") runs the
 	// wallet matchers only; "secrets" adds the opt-in non-wallet
@@ -306,6 +315,14 @@ type Options struct {
 	// sequential range pipelines of one ScanRangesWithOptions
 	// call; set by the range driver, never by callers.
 	rangeProofs *rangeProofAcc
+	// onRange, when non-nil, fires with each range's index as its
+	// pipeline starts. Set by in-package range callers that stamp
+	// detections by range (ScanFSVolumes); nil callers see no
+	// behavior change. Ranges scan sequentially and every range's
+	// detections are delivered before the next range starts, so the
+	// hook names the range a detection arrived from even when
+	// ranges overlap (offset search cannot).
+	onRange func(index int)
 }
 
 // rangeProofAcc accumulates completed-range proofs across one
@@ -367,16 +384,27 @@ type resumeClaim struct {
 // loadResumeClaim reads the journal's case for seed, or nil when
 // there is none. A stale journal beside an explicit caller start
 // is silently ignored (the caller asserted its start); shape and
-// proof problems warn through note and rescan. The cheap tier and
-// proof verification happen in runPipeline on the opened handle;
-// this only assembles the case.
-func loadResumeClaim(opts Options, seed scanTarget, runStart int64) (claim *resumeClaim, note string, coveredN int) {
+// proof problems warn through note and rescan. refused reports a
+// shape refusal on a start that continues the journal point: the
+// caller asked to continue proven bytes that cannot be proven,
+// so the run restarts at zero whether or not Resume is set. The
+// cheap tier and proof verification happen in runPipeline on the
+// opened handle; this only assembles the case.
+func loadResumeClaim(opts Options, seed scanTarget, runStart int64) (claim *resumeClaim, note string, coveredN int, refused bool) {
 	if opts.CheckpointPath == "" {
-		return nil, "", 0
+		return nil, "", 0, false
 	}
 	cp, err := ReadCheckpoint(opts.CheckpointPath)
 	if err != nil {
-		return nil, "", 0
+		// Absent, unreadable, or malformed state is not an
+		// explicit start: under Resume it restarts at zero
+		// with a warning (never a silent suffix-only
+		// success); without Resume the caller's start
+		// stands and the fresh journal stays quiet.
+		if opts.Resume {
+			return nil, fmt.Sprintf("cannot read checkpoint %s (%s); starting from the beginning", opts.CheckpointPath, err), 0, false
+		}
+		return nil, "", 0, false
 	}
 	desc := seed.Describe()
 	if cp.IsBatch() {
@@ -385,19 +413,39 @@ func loadResumeClaim(opts Options, seed scanTarget, runStart int64) (claim *resu
 				continue
 			}
 			if t.Path != desc {
-				return nil, fmt.Sprintf("journal active entry is %s, scanning %s; starting from the beginning", t.Path, desc), len(t.Covered)
+				return nil, mismatchNote(opts.Resume, fmt.Sprintf("journal active entry is %s, scanning %s", t.Path, desc), runStart), len(t.Covered), false
 			}
 			return claimForEntry(t.Offset, t.Proof, t.Covered, t.Ident, runStart, opts.Resume)
 		}
-		return nil, "", 0
+		// No active entry: the journal authorizes no skip for
+		// this run. Under Resume a nonzero start continues no
+		// journal point and restarts loudly; otherwise there
+		// is simply no case for the caller's start.
+		if opts.Resume && runStart > 0 {
+			return nil, "journal has no active entry; starting from the beginning", 0, false
+		}
+		return nil, "", 0, false
 	}
 	if len(cp.Ranges) > 0 {
-		return nil, fmt.Sprintf("checkpoint %s is a range-scan journal; refusing it for a whole-file scan", opts.CheckpointPath), len(cp.Covered)
+		return nil, fmt.Sprintf("checkpoint %s is a range-scan journal; refusing it for a whole-file scan", opts.CheckpointPath), len(cp.Covered), false
 	}
 	if cp.Path != desc {
-		return nil, fmt.Sprintf("checkpoint is for %s, not %s; starting from the beginning", cp.Path, desc), len(cp.Covered)
+		return nil, mismatchNote(opts.Resume, fmt.Sprintf("checkpoint is for %s, not %s", cp.Path, desc), runStart), len(cp.Covered), false
 	}
 	return claimForEntry(cp.Offset, cp.Proof, cp.Covered, cp.Ident, runStart, opts.Resume)
+}
+
+// mismatchNote phrases a journal/target mismatch honestly for the
+// run's mode: under Resume the run restarts at zero, otherwise
+// the caller's explicit start stands and the journal is ignored.
+// A static "starting from the beginning" would lie in the second
+// mode — the P1 class of warning that promises a rescan while
+// honoring a skip.
+func mismatchNote(resume bool, what string, runStart int64) string {
+	if resume {
+		return what + "; starting from the beginning"
+	}
+	return fmt.Sprintf("%s; journal ignored, honoring caller start %d", what, runStart)
 }
 
 // claimForEntry builds the verification case for one filed
@@ -411,27 +459,33 @@ func loadResumeClaim(opts Options, seed scanTarget, runStart int64) (claim *resu
 // only proof{Start: streamBase, Len >= offset} can authorize the
 // offset, so explicit -s skips and legacy journals rescan.
 // coveredN reports filed members for the banked-members warning
-// on refusal paths.
-func claimForEntry(offset int64, proof *PrefixProof, covered []string, ident FileIdentity, runStart int64, resume bool) (*resumeClaim, string, int) {
-	if offset == 0 && len(covered) == 0 {
-		return nil, "", 0
-	}
+// on refusal paths. refused is true when the run start continues
+// the journal point but the point is unprovable (missing,
+// foreign, or short proof): the caller asked to continue proven
+// bytes that cannot be proven, so adoptResume restarts at zero
+// whether or not Resume is set — the warning promises a rescan
+// and the run must deliver it. A zero point with no members
+// takes the same path as every other point (no early return):
+// run start 0 continues it and adopts its nothing, while a
+// nonzero start under Resume restarts loudly instead of
+// silently honoring a skip no journal backs.
+func claimForEntry(offset int64, proof *PrefixProof, covered []string, ident FileIdentity, runStart int64, resume bool) (*resumeClaim, string, int, bool) {
 	if runStart != rewindOffset(0, offset) && runStart != offset {
 		if !resume {
-			return nil, "", 0
+			return nil, "", 0, false
 		}
-		return nil, fmt.Sprintf("run starts at byte %d but the journal point is %d; starting from the beginning", runStart, offset), len(covered)
+		return nil, fmt.Sprintf("run starts at byte %d but the journal point is %d; starting from the beginning", runStart, offset), len(covered), false
 	}
 	if proof == nil {
-		return nil, "journal predates content proofs; rescanning from the start", len(covered)
+		return nil, "journal predates content proofs; rescanning from the start", len(covered), true
 	}
 	if proof.Start != 0 {
-		return nil, "journal offset was an explicit skip, never proven bytes; rescanning from the start", len(covered)
+		return nil, "journal offset was an explicit skip, never proven bytes; rescanning from the start", len(covered), true
 	}
 	if proof.Len < offset {
-		return nil, "journal proof is shorter than the journaled offset; rescanning from the start", len(covered)
+		return nil, "journal proof is shorter than the journaled offset; rescanning from the start", len(covered), true
 	}
-	return &resumeClaim{offset: offset, proof: proof, covered: covered, ident: ident}, "", 0
+	return &resumeClaim{offset: offset, proof: proof, covered: covered, ident: ident}, "", 0, false
 }
 
 // BadSectorFunc reports an unreadable byte range [start, end) in a target.
@@ -690,6 +744,9 @@ func ScanRangesWithOptions(path string, ranges []FSExtent, opts Options, onDetec
 		}
 		if i == startIdx && active != nil {
 			ropts.runResume = active
+		}
+		if opts.onRange != nil {
+			opts.onRange(i)
 		}
 		if err := runPipeline(t, ropts, onDetection, onProgress); err != nil {
 			return err
@@ -1007,20 +1064,23 @@ func newPubGate(log io.Writer) *pubGate {
 }
 
 // seedCovered loads banked members from the run-start journal,
-// keeping only members whose provenance span sits inside the
-// verified spans; the rest re-read. It returns the kept base keys
-// and the dropped filed keys (no parseable provenance, or
-// provenance outside verified bytes) for warnings. Callers seed
-// only after the spans verify on the opened handle.
-func (g *pubGate) seedCovered(keys []string, spans [][2]int64) (kept, dropped []string) {
-	kept, dropped = filterCoveredBySpans(keys, spans)
+// keeping only members whose UNIQUE provenance span sits inside
+// the verified spans; the rest re-read. It returns the kept base
+// keys, the dropped filed keys (no parseable provenance,
+// provenance outside verified bytes, or conflicting provenance),
+// and the filed entries dropped for conflict (same member, two
+// spans) for precise warnings. Callers seed only after the spans
+// verify on the opened handle.
+func (g *pubGate) seedCovered(keys []string, spans [][2]int64) (kept, dropped, conflicts []string) {
+	var validated map[string][2]int64
+	kept, dropped, validated, conflicts = filterCoveredBySpans(keys, spans)
 	if g == nil {
-		return kept, dropped
+		return kept, dropped, conflicts
 	}
 	g.coverMu.Lock()
 	defer g.coverMu.Unlock()
 	if len(kept) == 0 {
-		return kept, dropped
+		return kept, dropped, conflicts
 	}
 	if g.covered == nil {
 		g.covered = make(map[string]bool)
@@ -1028,19 +1088,17 @@ func (g *pubGate) seedCovered(keys []string, spans [][2]int64) (kept, dropped []
 	if g.seedSpan == nil {
 		g.seedSpan = make(map[string][2]int64)
 	}
+	// Retain the accepted (base, span) pair as one validated
+	// object: the span comes from the filter's validated map —
+	// the span was verified this run, so re-filing it is sound
+	// and a later smaller proof just filters it again — never
+	// rebuilt from filed input, so rejected entries cannot
+	// alter retained provenance whatever order they filed in.
 	for _, k := range kept {
 		g.covered[k] = true
+		g.seedSpan[k] = validated[k]
 	}
-	// Retain each kept key's own filed span for re-filing (the
-	// span was verified this run, so re-filing it is sound; a
-	// later smaller proof just filters it again).
-	for _, k := range keys {
-		base, s, e, ok := coverProvenance(k)
-		if ok && g.covered[base] {
-			g.seedSpan[base] = [2]int64{s, e}
-		}
-	}
-	return kept, dropped
+	return kept, dropped, conflicts
 }
 
 // bankCovered records a fully read nested target, keeping the live
@@ -1063,6 +1121,88 @@ func (g *pubGate) bankCovered(t scanTarget) {
 	}
 	g.covered[key] = true
 	g.live[key] = t
+}
+
+// deferCovered reports whether the rediscovered candidate t may
+// defer under a banked key. Members banked this run (no seeded
+// span) defer unconditionally: their bytes were read this run.
+// Seeded keys additionally cross-check the filed provenance span
+// against the candidate's own depth-1 extent: a filed span the
+// candidate does not occupy admits the member loudly and drops
+// the seed — so the lie can never re-file — because deferring
+// would skip bytes never read. Unknown extents decline and the
+// member re-reads. Nil-safe.
+func (g *pubGate) deferCovered(t scanTarget) bool {
+	if g == nil || t == nil {
+		return false
+	}
+	key := coverKeyOf(t)
+	g.coverMu.Lock()
+	if !g.covered[key] {
+		g.coverMu.Unlock()
+		return false
+	}
+	sp, seeded := g.seedSpan[key]
+	if !seeded {
+		g.coverMu.Unlock()
+		return true
+	}
+	s, e, startOnly, ok := deferProvenance(t)
+	match := ok && ((startOnly && s == sp[0]) || (!startOnly && s == sp[0] && e == sp[1]))
+	var note string
+	if !match {
+		delete(g.covered, key)
+		delete(g.seedSpan, key)
+		note = fmt.Sprintf("banked member %s filed provenance span %d-%d but the rediscovered member occupies %s; journal span untrusted, member re-scanned",
+			key, sp[0], sp[1], deferActual(s, e, startOnly, ok))
+	}
+	g.coverMu.Unlock()
+	if note != "" {
+		logLinef(g.log, "[scan] WARNING: %s\n", note)
+	}
+	return match
+}
+
+// deferActual describes the rediscovered extent for a span
+// mismatch warning: the full depth-1 span, the gzip start alone
+// when only it is knowable, or unknown when no extent resolves.
+func deferActual(s, e int64, startOnly, ok bool) string {
+	if !ok {
+		return "an unresolvable extent"
+	}
+	if startOnly {
+		return fmt.Sprintf("gzip start %d", s)
+	}
+	return fmt.Sprintf("%d-%d", s, e)
+}
+
+// deferProvenance resolves the provenance span snapshotCovered
+// would file for t, geometrically: walk the source chain to the
+// depth-1 link (deeper members inherit their depth-1 ancestor's
+// span, as at filing) and take its own extent. No banked
+// requirement — deferral runs pre-read, when nothing banked this
+// run can resolve through. A depth-1 gzip link contributes only
+// its start: the consumed end is unknowable before the member
+// reads, so gzip deferral checks the start alone (startOnly)
+// and the journal trust boundary covers the end (see doc.go).
+// Anything unknown declines and the member re-reads.
+func deferProvenance(t scanTarget) (s, e int64, startOnly, ok bool) {
+	for {
+		src, nested := sourceOf(t)
+		if !nested {
+			return 0, 0, false, false
+		}
+		if src.Depth() == 0 {
+			if s, e, ok := ownExtent(t); ok {
+				return s, e, false, true
+			}
+			if gz, isGz := t.(*gzipScanTarget); isGz && gz.gzipOffset >= 0 {
+				return gz.gzipOffset, 0, true, true
+			}
+			return 0, 0, false, false
+		}
+		t = src
+	}
 }
 
 func (g *pubGate) isCovered(key string) bool {
@@ -1321,11 +1461,12 @@ func (g *pubGate) skippedCount() int64 {
 // never block: outstanding counts exactly the channel's contents
 // (receives are the only removal, each paired with consumed), so
 // below the cap the channel always has room. Banked members defer
-// silently first: already-covered work is neither published nor
-// counted, so only uncovered refusals become skips. Callers must
-// treat false as unpublished (no EOF accounting either way).
+// first (seeded keys only under a matching provenance span):
+// already-covered work is neither published nor counted, so only
+// uncovered refusals become skips. Callers must treat false as
+// unpublished (no EOF accounting either way).
 func gatePublish(g *pubGate, ch chan scanTarget, t scanTarget) bool {
-	if g.isCovered(coverKeyOf(t)) {
+	if g.deferCovered(t) {
 		return false
 	}
 	if !g.tryPublish() {
@@ -1343,7 +1484,7 @@ func gatePublish(g *pubGate, ch chan scanTarget, t scanTarget) bool {
 // concerns pre-frontier bytes and the error path must rewind the
 // journal to the run start instead of trusting a frozen point.
 func gatePublishFlush(g *pubGate, ch chan scanTarget, t scanTarget) bool {
-	if g.isCovered(coverKeyOf(t)) {
+	if g.deferCovered(t) {
 		return false
 	}
 	if !g.tryPublish() {
@@ -1379,8 +1520,12 @@ type journalCtl struct {
 	// writes it on clean EOF only: EOF delivery already proves
 	// every byte delivered, while error/cancel paths keep the
 	// older proven mark instead of certifying doubt. Buffered
-	// one: the root ends once, so the send never blocks, and a
-	// clean-EOF return always finds it (sent before the EOF).
+	// one: the root ends once, so the send never blocks.
+	// Exactly one send per run (nil when the root never opened):
+	// the read pushes EOF downstream before returning, so a
+	// clean EOF can arrive first and runPipeline waits for the
+	// frontier before returning success — every successful
+	// completed target files its receipt.
 	final chan *pendingFrontier
 	// digest streams the root bytes of every checkpointed scan
 	// for prefix proofs and (under a batch journal) the manifest
@@ -1539,6 +1684,16 @@ type restartTarget struct {
 // StartOffset returns the rewound base.
 func (t *restartTarget) StartOffset() int64 { return t.start }
 
+// unwrapRestart returns the target beneath a refused-resume
+// restart wrapper. The restart changes only the start offset,
+// so kind and decoded-identity checks must see through it.
+func unwrapRestart(seed scanTarget) scanTarget {
+	if rt, ok := seed.(*restartTarget); ok && rt != nil {
+		return rt.scanTarget
+	}
+	return seed
+}
+
 // adoptResume verifies the journal's case for seed and adopts it,
 // or rewinds to the stream base. Range pipelines arrive
 // pre-verified (opts.runResume, proven on the shared handle);
@@ -1549,6 +1704,15 @@ func (t *restartTarget) StartOffset() int64 { return t.start }
 // every refusal warns and rescans.
 func adoptResume(opts Options, seed scanTarget, jc *journalCtl, gate *pubGate) scanTarget {
 	if jc == nil {
+		// No journal was ever configured (no checkpoint
+		// path): an explicit start stands — unless Resume
+		// asked to continue journal state that does not
+		// exist, which restarts loudly instead of silently
+		// authorizing a skip no journal backs.
+		if opts.Resume && seed.StartOffset() > 0 {
+			opts.logf("[checkpoint] WARNING: resume requested without a checkpoint path; starting from the beginning\n")
+			return &restartTarget{scanTarget: seed}
+		}
 		return seed
 	}
 	if opts.runResume != nil {
@@ -1559,14 +1723,24 @@ func adoptResume(opts Options, seed scanTarget, jc *journalCtl, gate *pubGate) s
 		return seed
 	}
 	runStart := seed.StartOffset()
-	claim, note, coveredN := loadResumeClaim(opts, seed, runStart)
+	claim, note, coveredN, refused := loadResumeClaim(opts, seed, runStart)
 	if claim == nil {
 		if note != "" {
 			opts.logf("[checkpoint] WARNING: %s\n", note)
-			if coveredN > 0 {
+			// Banked members re-scan only when the run
+			// actually restarts (or starts at zero); on an
+			// honored start the journal is ignored and its
+			// members dropped, so claiming a re-scan lies.
+			restart := runStart > 0 && (refused || opts.Resume)
+			if coveredN > 0 && (runStart == 0 || restart) {
 				opts.logf("[scan] WARNING: %d banked members re-scanned\n", coveredN)
 			}
-			if runStart > 0 && opts.Resume {
+			// A refused shape restarts even caller-driven
+			// (Resume unset): the start continues a journal
+			// point whose bytes cannot be proven, so
+			// honoring it would skip unverified coverage
+			// while the warning promises a rescan.
+			if restart {
 				return &restartTarget{scanTarget: seed}
 			}
 		}
@@ -1574,8 +1748,19 @@ func adoptResume(opts Options, seed scanTarget, jc *journalCtl, gate *pubGate) s
 	}
 	f, err := seed.Open()
 	if err != nil {
-		// The root read re-opens and fails honestly there;
-		// nothing is verified and nothing is honored.
+		// Verification must decide before consumption: returning
+		// the original nonzero seed would let a later
+		// successful root open honor an offset never proven
+		// (transient open failures are real), so refuse
+		// loudly and restart. Nothing is seeded and no
+		// verified handle is preserved.
+		opts.logf("[checkpoint] WARNING: cannot open %s to verify the journal claim (%s); rescanning from the start\n", seed.Describe(), err)
+		if len(claim.covered) > 0 {
+			opts.logf("[scan] WARNING: %d banked members re-scanned\n", len(claim.covered))
+		}
+		if runStart > 0 {
+			return &restartTarget{scanTarget: seed}
+		}
 		return seed
 	}
 	// Open-then-fstat where the reader is a plain file; decoded
@@ -1643,9 +1828,12 @@ func adoptVerified(opts Options, seed scanTarget, jc *journalCtl, gate *pubGate,
 	if len(rr.covered) == 0 {
 		return
 	}
-	_, dropped := gate.seedCovered(rr.covered, rr.spans)
-	if len(dropped) > 0 {
-		opts.logf("[scan] WARNING: %s: %d banked members outside verified bytes re-scanned\n", seed.Describe(), len(dropped))
+	_, dropped, conflicts := gate.seedCovered(rr.covered, rr.spans)
+	if outside := len(dropped) - len(conflicts); outside > 0 {
+		opts.logf("[scan] WARNING: %s: %d banked members outside verified bytes re-scanned\n", seed.Describe(), outside)
+	}
+	if len(conflicts) > 0 {
+		opts.logf("[scan] WARNING: %s: %d banked member entries filed under conflicting spans re-scanned\n", seed.Describe(), len(conflicts))
 	}
 }
 
@@ -1670,24 +1858,6 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 	userCtx := opts.scanContext()
 	ctx, cancel := context.WithCancel(userCtx)
 	defer cancel()
-
-	var rec *caseRecorder
-	if opts.CaseLogPath != "" {
-		rec = newCaseRecorder(seed, opts.ToolVersion, opts.Flags, opts.CheckpointPath)
-		opts.caseRec = rec
-		userDetect := onDetection
-		onDetection = func(d Detection) {
-			rec.noteDetection()
-			userDetect(d)
-		}
-		userBad := opts.OnBadSector
-		opts.OnBadSector = func(target string, start, end int64, err error) {
-			rec.noteSkipped(target, start, end, err)
-			if userBad != nil {
-				userBad(target, start, end, err)
-			}
-		}
-	}
 
 	signals := make(chan error, 10)
 
@@ -1755,6 +1925,27 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 		jc.digestBase = seed.StartOffset()
 		jc.digestLen = seed.StartOffset()
 	}
+	// The case recorder takes the POST-adoption seed: a refused
+	// claim restarts at zero, and recording the caller's start
+	// while hashing from zero fails verification. The wraps
+	// still precede every stage goroutine below.
+	var rec *caseRecorder
+	if opts.CaseLogPath != "" {
+		rec = newCaseRecorder(seed, opts.ToolVersion, opts.Flags, opts.CheckpointPath)
+		opts.caseRec = rec
+		userDetect := onDetection
+		onDetection = func(d Detection) {
+			rec.noteDetection()
+			userDetect(d)
+		}
+		userBad := opts.OnBadSector
+		opts.OnBadSector = func(target string, start, end int64, err error) {
+			rec.noteSkipped(target, start, end, err)
+			if userBad != nil {
+				userBad(target, start, end, err)
+			}
+		}
+	}
 	defer func() {
 		if n := gate.skippedCount(); n > 0 {
 			opts.logf("[scan] WARNING: skipped %d nested archives past the %d publication cap; coverage is incomplete\n", n, maxOutstandingPubs)
@@ -1807,12 +1998,8 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 				signal = fmt.Errorf("incomplete coverage: skipped %d nested targets past the %d publication cap; retry to recover", n, maxOutstandingPubs)
 			}
 		}
-		if rec != nil {
-			status, runErr := "complete", error(nil)
-			if signal != io.EOF {
-				status, runErr = "error", signal
-			}
-			if err := appendCaseLog(opts.CaseLogPath, rec.finish(status, runErr)); err != nil {
+		if rec != nil && signal != io.EOF {
+			if err := appendCaseLog(opts.CaseLogPath, rec.finish("error", signal)); err != nil {
 				return fmt.Errorf("case log: %w", err)
 			}
 		}
@@ -1826,23 +2013,7 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 			opts.logf("[scan] WARNING: %s changed during the scan; output may mix bytes (resume re-verifies)\n", seed.Describe())
 		}
 		if signal == io.EOF {
-			// Clean EOF proves every byte delivered (final-EOF
-			// forwarding implies every published target was
-			// read and every block processed), so the
-			// completion frontier is safe to journal now.
-			// Error paths keep the older proven mark
-			// instead of certifying doubt.
-			if jc != nil {
-				select {
-				case ff := <-jc.final:
-					// Completion subsumes banking: drop the
-					// covered list instead of filing it.
-					ff.covered = nil
-					writeFrontier(opts, ff)
-				default:
-				}
-			}
-			return nil
+			return finishCompletedScan(userCtx, opts, jc, rec)
 		}
 		if jc != nil {
 			// Banked members must survive the error return or
@@ -1877,13 +2048,46 @@ func runPipeline(seed scanTarget, opts Options, onDetection func(Detection), onP
 		}
 		return signal
 	case <-userCtx.Done():
-		if rec != nil {
-			if err := appendCaseLog(opts.CaseLogPath, rec.finish("canceled", userCtx.Err())); err != nil {
-				return fmt.Errorf("case log: %w", err)
-			}
-		}
-		return userCtx.Err()
+		return finishCanceledScan(userCtx, opts, rec)
 	}
+}
+
+// finishCompletedScan runs only after clean EOF proves that every admitted
+// block was delivered. The reader can still be preparing the root frontier,
+// so resolve that wait before writing a complete case record. Cancellation
+// while it is pending follows the same path as cancellation during scanning:
+// return the context error, record canceled, and leave the old journal alone.
+func finishCompletedScan(ctx context.Context, opts Options, jc *journalCtl, rec *caseRecorder) error {
+	var final *pendingFrontier
+	if jc != nil {
+		select {
+		case final = <-jc.final:
+			// Exactly one buffered send per root, nil if it never opened.
+		case <-ctx.Done():
+			return finishCanceledScan(ctx, opts, rec)
+		}
+	}
+	if rec != nil {
+		if err := appendCaseLog(opts.CaseLogPath, rec.finish("complete", nil)); err != nil {
+			return fmt.Errorf("case log: %w", err)
+		}
+	}
+	if final != nil {
+		// Completion subsumes banking. Journal write failures retain the
+		// existing warn-and-continue policy rather than losing delivered hits.
+		final.covered = nil
+		writeFrontier(opts, final)
+	}
+	return nil
+}
+
+func finishCanceledScan(ctx context.Context, opts Options, rec *caseRecorder) error {
+	if rec != nil {
+		if err := appendCaseLog(opts.CaseLogPath, rec.finish("canceled", ctx.Err())); err != nil {
+			return fmt.Errorf("case log: %w", err)
+		}
+	}
+	return ctx.Err()
 }
 
 func scanBlocks(ctx context.Context, targets chan scanTarget, emptyBlocks chan *Block, out chan *Block,
@@ -1907,12 +2111,8 @@ func scanBlocks(ctx context.Context, targets chan scanTarget, emptyBlocks chan *
 		if !alive {
 			return
 		}
-		if !isRoot && outcome.opened {
-			// Banked only once fully read: coverKeyOf() is
-			// stable across resumes of the same input, so
-			// the key re-identifies this member next run.
-			gate.bankCovered(target)
-		}
+		// Nested banking happens inside readTarget, before
+		// the member EOF queues (see pushEOF).
 		if isRoot && opts.strictRoot {
 			// The root promised bytes but yielded none (vanished
 			// mid-run, fully unreadable): that is a failed scan,
@@ -1925,7 +2125,17 @@ func scanBlocks(ctx context.Context, targets chan scanTarget, emptyBlocks chan *
 			}
 			rootDone <- outcome.rootErr
 		}
-		if isRoot && jc != nil && outcome.opened {
+		if isRoot && jc != nil {
+			// Exactly one send per run, frontier or nil: the
+			// read pushed EOF downstream before returning, so
+			// runPipeline may already wait for this send (it
+			// blocks for it on clean EOF). An unopened root
+			// sends nil — no bytes, no frontier — so the
+			// receiver never hangs on a missing send.
+			if !outcome.opened {
+				jc.final <- nil
+				continue
+			}
 			// The completion frontier supersedes any 1MB point;
 			// runPipeline writes it on clean EOF, when delivery
 			// is proven. A clean full span — fresh from the
@@ -1989,6 +2199,19 @@ func readTarget(ctx context.Context, targets chan scanTarget, emptyBlocks chan *
 	// Every target yields exactly one EOF unless canceled; the
 	// stages' publish/consume balance depends on it.
 	pushEOF := func() bool {
+		// Bank before the EOF queues: downstream EOF proves
+		// delivery, and the error path snapshots banking after
+		// final EOF — so a reported member must already be
+		// banked here, or a retry replays it (exactly-once
+		// violation). Banked only once fully read:
+		// coverKeyOf() is stable across resumes of the same
+		// input, so the key re-identifies this member next
+		// run. Roots never bank; unopened and canceled reads
+		// bank nothing (canceled returns bypass this
+		// closure entirely).
+		if !isRoot && outcome.opened {
+			gate.bankCovered(target)
+		}
 		select {
 		case <-ctx.Done():
 			return false
@@ -2245,13 +2468,12 @@ func drainFrontier(ctx context.Context, targets chan scanTarget, emptyBlocks cha
 				return false
 			case nested := <-targets:
 				gate.consumed()
-				nestedOutcome, alive := readTarget(ctx, targets, emptyBlocks, out, onProgress, opts, jc, gate, nested, false)
+				_, alive := readTarget(ctx, targets, emptyBlocks, out, onProgress, opts, jc, gate, nested, false)
 				if !alive {
 					return false
 				}
-				if nestedOutcome.opened {
-					gate.bankCovered(nested)
-				}
+				// Banking happens inside readTarget, before
+				// the member EOF queues (see pushEOF).
 			default:
 				drained = true
 			}

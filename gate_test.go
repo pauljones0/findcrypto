@@ -1290,6 +1290,107 @@ func TestResumeSwappedBytesRescan(t *testing.T) {
 	}
 }
 
+// Resume with no readable journal restarts at zero or aborts
+// loudly (B3) — it never honors a caller suffix as verified
+// resume state. Missing journals override -s (the announcement
+// promises the beginning); malformed ones abort with a case
+// attempt record; -resume without -checkpoint stays a usage
+// error.
+func TestResumeUnreadableJournalCLI(t *testing.T) {
+	mkTarget := func(t *testing.T, dir string) string {
+		t.Helper()
+		return writeGateFile(t, dir, "target.bin", "bestblock"+strings.Repeat("z", 40000))
+	}
+	readRecords := func(t *testing.T, logPath string) []detector.CaseLog {
+		t.Helper()
+		raw, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recs []detector.CaseLog
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			var rec detector.CaseLog
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("bad case-log line %q: %s", line, err)
+			}
+			recs = append(recs, rec)
+		}
+		return recs
+	}
+	t.Run("missing journal overrides -s", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		journal := filepath.Join(dir, "absent.cp")
+		casePath := filepath.Join(dir, "case.jsonl")
+		stdout, stderr, exit := runTestBinary(t, "-json", "-s", "16384",
+			"-checkpoint", journal, "-resume", "-case-log", casePath, target)
+		if exit != 0 {
+			t.Fatalf("exit %d, want 0 (stderr:\n%s)", exit, stderr)
+		}
+		if !strings.Contains(stderr, "starting from the beginning") {
+			t.Errorf("must announce the restart, stderr:\n%s", stderr)
+		}
+		if !strings.Contains(stdout, "bestblock") {
+			t.Errorf("head needle lost: -s survived a missing journal, stdout:\n%s", stdout)
+		}
+		recs := readRecords(t, casePath)
+		if len(recs) != 1 || recs[0].Status != "complete" || recs[0].Source.StartOffset != 0 {
+			t.Errorf("case records = %+v, want one complete record at start 0", recs)
+		}
+	})
+	t.Run("malformed journal aborts with an attempt record", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		journal := writeGateFile(t, dir, "bad.cp", "{invalid")
+		casePath := filepath.Join(dir, "case.jsonl")
+		_, stderr, exit := runTestBinary(t, "-checkpoint", journal, "-resume", "-case-log", casePath, target)
+		if exit != 1 {
+			t.Fatalf("exit %d, want 1 (stderr:\n%s)", exit, stderr)
+		}
+		if !strings.Contains(stderr, "Exiting due to error") {
+			t.Errorf("must exit loudly, stderr:\n%s", stderr)
+		}
+		recs := readRecords(t, casePath)
+		if len(recs) != 1 || recs[0].Status != "error" || recs[0].Source.Kind != "unknown" || recs[0].Error == "" {
+			t.Errorf("case records = %+v, want one error attempt naming the cause", recs)
+		}
+		if recs[0].Hash.BytesHashed != 0 || recs[0].Hash.SHA256 != "" {
+			t.Errorf("attempt record invents coverage: %+v", recs[0].Hash)
+		}
+	})
+	t.Run("inaccessible journal aborts", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		journal := writeGateFile(t, dir, "noperm.cp", "{}")
+		if err := os.Chmod(journal, 0000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(journal, 0644) })
+		if f, err := os.Open(journal); err == nil {
+			f.Close()
+			t.Skip("platform reads chmod-000 files (Windows/root)")
+		}
+		_, stderr, exit := runTestBinary(t, "-checkpoint", journal, "-resume", target)
+		if exit != 1 {
+			t.Fatalf("exit %d, want 1 (stderr:\n%s)", exit, stderr)
+		}
+		if !strings.Contains(stderr, "Exiting due to error") {
+			t.Errorf("must exit loudly, stderr:\n%s", stderr)
+		}
+	})
+	t.Run("resume without a checkpoint path is a usage error", func(t *testing.T) {
+		dir := t.TempDir()
+		target := mkTarget(t, dir)
+		_, stderr, exit := runTestBinary(t, "-resume", target)
+		if exit == 0 {
+			t.Fatalf("exit 0, want nonzero (stderr:\n%s)", stderr)
+		}
+		if !strings.Contains(stderr, "-resume requires -checkpoint") {
+			t.Errorf("must name the missing flag, stderr:\n%s", stderr)
+		}
+	})
+}
+
 // The doc-commands contract (Goal 33): every ```sh line in
 // docs/PASSWORD_RECOVERY.md must be shaped to run verbatim under
 // scripts/password-handoff.sh (same fence convention, known lead tool,

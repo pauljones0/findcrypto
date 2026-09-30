@@ -3,6 +3,7 @@ package detector
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -179,7 +180,8 @@ func TestPubGateCoverKeyDiscriminatesViews(t *testing.T) {
 	if coverKeyOf(mkEntry(50, 8)) == coverKeyOf(mkEntry(50, 0)) {
 		t.Error("entry cover keys collide across methods")
 	}
-	if coverKeyOf(mkZip(1000)) != coverKeyOf(mkZip(1000)) {
+	za, zb := mkZip(1000), mkZip(1000)
+	if coverKeyOf(za) != coverKeyOf(zb) {
 		t.Error("identical zip members key differently")
 	}
 	// End to end at the gate: banking one view must not defer
@@ -202,6 +204,134 @@ func TestPubGateCoverKeyDiscriminatesViews(t *testing.T) {
 	if gatePublishFlush(g, ch, mkEntry(50, 8)) {
 		t.Error("identical recovery entry admitted despite banked key")
 	}
+}
+
+// Seeded (journal) deferral cross-checks the filed provenance
+// span against the rediscovered candidate's own extent: a filed
+// span the candidate does not occupy admits the member loudly
+// instead of deferring it. Banked-this-run members (no seeded
+// span) still defer unconditionally — their bytes were read
+// this run. Gzip candidates check the start alone: the consumed
+// end is unknowable before the member reads.
+func TestPubGateSeededSpanCrossCheck(t *testing.T) {
+	src := &fileScanTarget{path: "span.bin"}
+	gz := func() *gzipScanTarget { return &gzipScanTarget{source: src, gzipOffset: 700} }
+	z := func() *zipScanTarget { return &zipScanTarget{source: src, zipOffset: 100, fileIndex: 0, zipSize: 500} }
+	seed := func(g *pubGate, key string) {
+		t.Helper()
+		kept, _, _ := g.seedCovered([]string{key}, [][2]int64{{0, 4096}})
+		if len(kept) != 1 {
+			t.Fatalf("seed kept %v, want the key", kept)
+		}
+	}
+	t.Run("honest spans defer", func(t *testing.T) {
+		var log bytes.Buffer
+		g := newPubGate(&log)
+		seed(g, coverKeyOf(gz())+"|rootext=700-760")
+		seed(g, coverKeyOf(z())+"|rootext=100-600")
+		ch := make(chan scanTarget, 4)
+		if gatePublish(g, ch, gz()) {
+			t.Error("honest seeded gzip span admitted (must defer)")
+		}
+		if gatePublish(g, ch, z()) {
+			t.Error("honest seeded zip span admitted (must defer)")
+		}
+		if log.Len() > 0 {
+			t.Errorf("honest spans must defer quietly, got:\n%s", log.String())
+		}
+	})
+	t.Run("forged spans admit loudly", func(t *testing.T) {
+		var log bytes.Buffer
+		g := newPubGate(&log)
+		seed(g, coverKeyOf(gz())+"|rootext=0-100")
+		seed(g, coverKeyOf(z())+"|rootext=0-100")
+		ch := make(chan scanTarget, 4)
+		admitted := 0
+		if !gatePublish(g, ch, gz()) {
+			t.Error("forged gzip span deferred (must admit + warn)")
+		} else {
+			admitted++
+		}
+		if !gatePublish(g, ch, z()) {
+			t.Error("forged zip span deferred (must admit + warn)")
+		} else {
+			admitted++
+		}
+		if n := strings.Count(log.String(), "provenance span"); n != 2 {
+			t.Errorf("want 2 span-mismatch warnings, got %d:\n%s", n, log.String())
+		}
+		// The lie is dropped, not re-filed: draining the
+		// admits leaves no covered keys behind.
+		for i := 0; i < admitted; i++ {
+			<-ch
+		}
+		if got := g.snapshotCovered(); len(got) != 0 {
+			t.Errorf("dropped seeds re-filed = %v, want empty", got)
+		}
+	})
+	t.Run("banked this run defers without a span", func(t *testing.T) {
+		g := newPubGate(io.Discard)
+		g.bankCovered(gz())
+		ch := make(chan scanTarget, 1)
+		if gatePublish(g, ch, gz()) {
+			t.Error("banked-this-run member admitted (must defer)")
+		}
+	})
+}
+
+// Conflicting provenance for one identity drops every entry for
+// that member, whatever order they filed in: a rejected span
+// must never overwrite a retained one (B1), and two acceptances
+// have no unique span to retain. The member re-reads; nothing
+// is retained for a conflicted base.
+func TestSeededConflictsDropEntireBase(t *testing.T) {
+	src := &fileScanTarget{path: "inert.bin"}
+	m := &zipScanTarget{source: src, zipOffset: 100, zipSize: 500}
+	key := coverKeyOf(m)
+	spans := [][2]int64{{0, 20}}
+	for _, tc := range []struct {
+		name  string
+		filed []string
+	}{
+		{"valid plus out-of-proof duplicate", []string{key + "|rootext=0-10", key + "|rootext=100-600"}},
+		{"reversed order", []string{key + "|rootext=100-600", key + "|rootext=0-10"}},
+		{"two conflicting in-proof spans", []string{key + "|rootext=0-10", key + "|rootext=10-20"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newPubGate(io.Discard)
+			kept, dropped, _ := g.seedCovered(tc.filed, spans)
+			if len(kept) != 0 {
+				t.Errorf("kept = %v, want empty (conflict drops all)", kept)
+			}
+			if len(dropped) != 2 {
+				t.Errorf("dropped = %v, want both filed entries", dropped)
+			}
+			if g.deferCovered(m) {
+				t.Error("conflicted member deferred (must re-read)")
+			}
+			if _, ok := g.seedSpan[key]; ok {
+				t.Errorf("retained span for conflicted base %q", key)
+			}
+		})
+	}
+	t.Run("exact duplicates keep once", func(t *testing.T) {
+		g := newPubGate(io.Discard)
+		kept, dropped, _ := g.seedCovered([]string{key + "|rootext=0-10", key + "|rootext=0-10"}, spans)
+		if len(kept) == 0 || len(dropped) != 0 {
+			t.Errorf("kept = %v dropped = %v, want the identical span kept", kept, dropped)
+		}
+		if sp, ok := g.seedSpan[key]; !ok || sp != [2]int64{0, 10} {
+			t.Errorf("retained span = %v,%v, want [0 10]", sp, ok)
+		}
+	})
+	t.Run("different members may share spans", func(t *testing.T) {
+		other := &zipScanTarget{source: src, zipOffset: 100, fileIndex: 1, zipSize: 500}
+		g := newPubGate(io.Discard)
+		kept, _, _ := g.seedCovered([]string{key + "|rootext=0-10", coverKeyOf(other) + "|rootext=0-10"}, spans)
+		if len(kept) != 2 {
+			t.Errorf("kept = %v, want both members (shared spans are depth inheritance, not conflict)", kept)
+		}
+	})
 }
 
 func TestPubGateCapZeroAdmitsNothing(t *testing.T) {
@@ -293,7 +423,7 @@ func TestPubGateCongestedVsBaseline(t *testing.T) {
 	// Nested hits only (Target != path): raw root leaks of the
 	// needle are Go-flate-version-dependent, but the
 	// congested/baseline contract concerns nested members only.
-	scan := func(cap int64, start int64, cpPath, clPath string) (dets int, err error, log string) {
+	scan := func(cap int64, start int64, cpPath, clPath string) (dets int, log string, err error) {
 		maxOutstandingPubs = cap
 		var lb bytes.Buffer
 		err = ScanWithOptions(start, path, Options{
@@ -303,7 +433,7 @@ func TestPubGateCongestedVsBaseline(t *testing.T) {
 				dets++
 			}
 		}, func(ProgressInfo) {})
-		return dets, err, lb.String()
+		return dets, lb.String(), err
 	}
 	lastCaseStatus := func(t *testing.T, clPath string) string {
 		t.Helper()
@@ -320,7 +450,7 @@ func TestPubGateCongestedVsBaseline(t *testing.T) {
 	}
 
 	// Baseline: uncongested, full coverage, clean completion.
-	bd, berr, blog := scan(100, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"))
+	bd, blog, berr := scan(100, 0, filepath.Join(dir, "base.cp"), filepath.Join(dir, "base.log"))
 	if berr != nil {
 		t.Fatalf("baseline scan: %v\n%s", berr, blog)
 	}
@@ -333,7 +463,7 @@ func TestPubGateCongestedVsBaseline(t *testing.T) {
 
 	// Congested: partial detections, honest error, frozen journal.
 	cpPath, clPath := filepath.Join(dir, "cong.cp"), filepath.Join(dir, "cong.log")
-	cd, cerr, clog := scan(3, 0, cpPath, clPath)
+	cd, clog, cerr := scan(3, 0, cpPath, clPath)
 	if cerr == nil || !strings.Contains(cerr.Error(), "incomplete coverage") {
 		t.Fatalf("congested scan error = %v, want incomplete-coverage error\n%s", cerr, clog)
 	}
@@ -451,5 +581,297 @@ func TestPubGateBatchJournalStaysActive(t *testing.T) {
 	}
 	if cp.Targets[0].SHA256 == "" {
 		t.Fatal("clean full-pass retry journaled no digest")
+	}
+}
+
+// Root026 receipt, preserved verbatim as a living gate: ten
+// synthetic ZIP members, uncongested versus backlogged. The
+// backlogged case passes only on full recovery (10/10) or honest
+// abort (error plus a non-complete case log) — never on partial
+// coverage certified successful/complete.
+func TestRootPublicationCoverageCaseLog(t *testing.T) {
+	// Fixture bytes come from the literal-free builder (member
+	// counting assumes the needle is visible only through member
+	// decompression); every assertion below is the frozen 026
+	// receipt verbatim.
+	names := make([]string, 10)
+	for i := range names {
+		names[i] = "m.dat"
+	}
+	zb := zipBytesWithoutLiteralNeedle(t, names)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "synthetic.zip")
+	if err := os.WriteFile(target, zb, 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := maxOutstandingPubs
+	defer func() { maxOutstandingPubs = old }()
+	for _, name := range []string{"uncongested", "backlogged"} {
+		maxOutstandingPubs = 100
+		if name == "backlogged" {
+			maxOutstandingPubs = 3
+		}
+		var log bytes.Buffer
+		count := 0
+		casePath := filepath.Join(dir, name+".jsonl")
+		err := ScanWithOptions(0, target, Options{Log: &log, CaseLogPath: casePath}, func(Detection) { count++ }, func(ProgressInfo) {})
+		body, readErr := os.ReadFile(casePath)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var record CaseLog
+		if decodeErr := json.NewDecoder(bytes.NewReader(body)).Decode(&record); decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		t.Logf("ROOT_RECEIPT case=%s detections=%d returned_error=%v case_log_status=%s log=%q", name, count, err, record.Status, log.String())
+		if name == "uncongested" && (count != 10 || err != nil || record.Status != "complete") {
+			t.Fatalf("baseline failed")
+		}
+		if name == "backlogged" && count != 10 && (err == nil || record.Status == "complete") {
+			t.Fatalf("ROOT_CONTRACT_FAIL: incomplete nested coverage was certified successful/complete")
+		}
+	}
+}
+
+// Retry equivalence after an honest backlog abort: the aborted
+// run freezes its journal short of completion with exactly the
+// reported members banked (no advance past omitted work), and an
+// uncongested resume reports the rest — together exactly 10 with
+// no replays — then files completion with banking subsumed.
+// Per-run splits vary with scheduling (the cap admits at least
+// the first 3 publishes but racing consumption admits more),
+// so the test pins totals and journal honesty, not the split.
+func TestPublicationBacklogRetryEquivalence(t *testing.T) {
+	target := buildBacklogZip(t, 10)
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := maxOutstandingPubs
+	defer func() { maxOutstandingPubs = old }()
+	dir := t.TempDir()
+	ckpt := filepath.Join(dir, "c.json")
+
+	maxOutstandingPubs = 3
+	var d1 []Detection
+	l1 := filepath.Join(dir, "l1.jsonl")
+	err1 := ScanWithOptions(0, target, Options{CheckpointPath: ckpt, CaseLogPath: l1},
+		func(d Detection) { d1 = append(d1, d) }, func(ProgressInfo) {})
+	if err1 == nil || !strings.Contains(err1.Error(), "incomplete coverage") {
+		t.Fatalf("backlogged run err=%v, want incomplete-coverage error", err1)
+	}
+	if len(d1) < 3 || len(d1) >= 10 {
+		t.Fatalf("backlogged run reported %d, want a partial 3..9", len(d1))
+	}
+	if recs := readCaseLog(t, l1); len(recs) != 1 || recs[0].Status != "error" {
+		t.Fatalf("backlogged case log %+v, want one error record", recs)
+	}
+	cp, err := ReadCheckpoint(ckpt)
+	if err != nil {
+		t.Fatalf("aborted run filed no journal: %v", err)
+	}
+	if cp.Offset >= int64(len(raw)) || len(cp.Covered) != len(d1) {
+		t.Fatalf("aborted journal at offset %d with %d banked, want frozen short of %d with %d banked",
+			cp.Offset, len(cp.Covered), len(raw), len(d1))
+	}
+
+	maxOutstandingPubs = 100
+	var d2 []Detection
+	l2 := filepath.Join(dir, "l2.jsonl")
+	if err := ScanWithOptions(0, target, Options{CheckpointPath: ckpt, Resume: true, CaseLogPath: l2},
+		func(d Detection) { d2 = append(d2, d) }, func(ProgressInfo) {}); err != nil {
+		t.Fatalf("uncongested resume: %v", err)
+	}
+	if len(d1)+len(d2) != 10 {
+		t.Fatalf("union %d+%d, want exactly 10 with no replays", len(d1), len(d2))
+	}
+	if recs := readCaseLog(t, l2); len(recs) != 1 || recs[0].Status != "complete" {
+		t.Fatalf("resume case log %+v, want one complete record", recs)
+	}
+	cp, err = ReadCheckpoint(ckpt)
+	if err != nil {
+		t.Fatalf("resumed run filed no journal: %v", err)
+	}
+	if cp.Offset != int64(len(raw)) || len(cp.Covered) != 0 {
+		t.Fatalf("resumed journal at offset %d with %d banked, want %d with banking subsumed",
+			cp.Offset, len(cp.Covered), len(raw))
+	}
+}
+
+// Same-cap retries converge instead of replaying: banking defers
+// already-read members, so every attempt under the same cap banks
+// at least the first 3 unbanked publishes and errors honestly
+// until the last member completes the run. Only 10/10 succeeds.
+func TestPublicationBacklogSameCapConverges(t *testing.T) {
+	target := buildBacklogZip(t, 10)
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := maxOutstandingPubs
+	defer func() { maxOutstandingPubs = old }()
+	maxOutstandingPubs = 3
+	ckpt := filepath.Join(t.TempDir(), "c.json")
+	total := 0
+	done := false
+	for i := 0; i < 6 && !done; i++ {
+		var dets []Detection
+		opts := Options{CheckpointPath: ckpt}
+		if i > 0 {
+			opts.Resume = true
+		}
+		err := ScanWithOptions(0, target, opts,
+			func(d Detection) { dets = append(dets, d) }, func(ProgressInfo) {})
+		total += len(dets)
+		cp, rerr := ReadCheckpoint(ckpt)
+		if rerr != nil {
+			t.Fatalf("try %d filed no journal: %v", i+1, rerr)
+		}
+		if err == nil {
+			done = true
+			if total != 10 {
+				t.Fatalf("clean try %d with total %d, want 10", i+1, total)
+			}
+			if cp.Offset != int64(len(raw)) || len(cp.Covered) != 0 {
+				t.Fatalf("converged journal at offset %d with %d banked, want %d subsumed",
+					cp.Offset, len(cp.Covered), len(raw))
+			}
+			continue
+		}
+		if !strings.Contains(err.Error(), "incomplete coverage") {
+			t.Fatalf("try %d err=%v, want incomplete-coverage error", i+1, err)
+		}
+		// The first 3 publishes always admit (outstanding
+		// starts at 0), so every failed try still banks
+		// progress; only a full 10 succeeds.
+		if len(dets) < 3 || total >= 10 {
+			t.Fatalf("try %d reported %d (total %d), want 3+ new with work outstanding",
+				i+1, len(dets), total)
+		}
+		if cp.Offset >= int64(len(raw)) || len(cp.Covered) != total {
+			t.Fatalf("try %d journal at offset %d with %d banked, want frozen with %d banked",
+				i+1, cp.Offset, len(cp.Covered), total)
+		}
+	}
+	if !done {
+		t.Fatalf("no convergence within 6 same-cap tries (total %d)", total)
+	}
+}
+
+// zipBytesWithoutLiteralNeedle builds a member archive whose raw
+// bytes contain no literal needle, so member content is found only
+// by decompressing members — never by the raw root scan. Required
+// because tiny-payload flate encoding is toolchain-dependent (Go
+// 1.27 stores 9-byte members, adding raw root-level hits that break
+// member counting). Padding grows until the premise holds —
+// deterministic per toolchain — and the test fails loudly if no
+// padding works, instead of silently counting wrong.
+func zipBytesWithoutLiteralNeedle(t *testing.T, names []string) []byte {
+	t.Helper()
+	needle := []byte("bestblock")
+	pads := []int{0}
+	for p := 8; p <= 256; p += 8 {
+		pads = append(pads, p)
+	}
+	pads = append(pads, 512, 1024, 2048, 4096)
+	for _, pad := range pads {
+		var zb bytes.Buffer
+		w := zip.NewWriter(&zb)
+		payload := append([]byte("bestblock"), bytes.Repeat([]byte{0xA5}, pad)...)
+		for _, nm := range names {
+			fw, err := w.Create(nm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fw.Write(payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Count(zb.Bytes(), needle) == 0 {
+			return zb.Bytes()
+		}
+	}
+	t.Fatal("no padding keeps the needle out of raw archive bytes")
+	return nil
+}
+
+// buildBacklogZip writes ten same-content members under distinct
+// names: identical needles keep counting honest while names keep
+// members distinguishable for coverage assertions.
+func buildBacklogZip(t *testing.T, n int) string {
+	t.Helper()
+	names := make([]string, n)
+	for i := range names {
+		names[i] = "m" + string(rune('0'+i)) + ".dat"
+	}
+	zb := zipBytesWithoutLiteralNeedle(t, names)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "synthetic.zip")
+	if err := os.WriteFile(target, zb, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+type orderProbeReader struct{ *bytes.Reader }
+
+func (orderProbeReader) Close() error { return nil }
+
+type orderProbeTarget struct {
+	desc string
+	data []byte
+}
+
+func (t *orderProbeTarget) Describe() string     { return t.desc }
+func (t *orderProbeTarget) StartOffset() int64   { return 0 }
+func (t *orderProbeTarget) Size() (int64, error) { return int64(len(t.data)), nil }
+func (t *orderProbeTarget) Open() (TargetReader, error) {
+	return orderProbeReader{bytes.NewReader(t.data)}, nil
+}
+func (t *orderProbeTarget) Depth() int { return 1 }
+
+// A nested member is banked before its EOF queues: downstream EOF
+// proves delivery, and the error path snapshots banking after
+// final EOF — so a reported member must already be banked when
+// readTarget returns, or a retry replays it (exactly-once
+// violation; 026 union divergence). Regression: banking used to
+// happen in the caller after return, leaving a window where a
+// delivered member was still unbanked at the error snapshot.
+func TestNestedBankedBeforeReturn(t *testing.T) {
+	ctx := context.Background()
+	targets := make(chan scanTarget, 4)
+	emptyBlocks := make(chan *Block, 4)
+	for i := 0; i < 4; i++ {
+		emptyBlocks <- &Block{data: make([]byte, blockSize+scanOverlap())}
+	}
+	out := make(chan *Block, 16)
+	gate := newPubGate(io.Discard)
+	tgt := &orderProbeTarget{desc: "order-probe|member", data: []byte("probe payload")}
+	outcome, alive := readTarget(ctx, targets, emptyBlocks, out,
+		func(ProgressInfo) {}, Options{}, &journalCtl{}, gate, tgt, false)
+	if !alive {
+		t.Fatal("readTarget not alive")
+	}
+	if !outcome.opened {
+		t.Fatal("readTarget did not open the probe")
+	}
+	key := coverKeyOf(tgt)
+	gate.coverMu.Lock()
+	banked := gate.covered[key]
+	gate.coverMu.Unlock()
+	if !banked {
+		t.Fatalf("nested member %q not banked at readTarget return", key)
+	}
+	eofs := 0
+	for len(out) > 0 {
+		if <-out == EOF {
+			eofs++
+		}
+	}
+	if eofs != 1 {
+		t.Fatalf("queued %d EOFs, want exactly 1", eofs)
 	}
 }

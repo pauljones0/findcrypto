@@ -54,7 +54,7 @@ Supported inputs, detected automatically:
 - **Split raw** (`base.001`, `base.002`, …): concatenated and scanned
   as one stream; any segment may be named on the command line.
 - **Raw** devices and files, as before.
-- **Filesystem-guided** (`-fs`, `-unallocated-only`): NTFS/ext
+- **Filesystem-guided** (`-fs`, `-unallocated-only`): NTFS/ext/FAT/exFAT/XFS
   inventories and range scans; each range appends its own case-log
   record.
 
@@ -62,18 +62,17 @@ Long scans should add `-checkpoint case.checkpoint`: an interrupted
 run resumes with `-resume` instead of restarting. The case log records
 the checkpoint path and the resume offset.
 
-Range scans (`-fs` over one volume, `-unallocated-only`) journal
-`(range_index, offset)` the same way. Resume first checks the journal's
-range list still matches the volume's exactly — a changed filesystem
-refuses loudly rather than silently skipping bytes, so re-image and
-start over if the evidence moved. The resumed range rewinds to its 4kB
-block grid just before the journal point, so patterns straddling the
-interruption still match and the resumed detection set is identical to
-an uninterrupted run (the re-scanned window may re-report hits already
-printed before the kill — deduplicate by `(needle, offset)` when
-merging outputs). One journal holds one range list: checkpointing is
-refused across several auto-seeded volumes in one `-fs` run — pin one
-volume with `-fs-offset` and journal each volume separately.
+Range scans (`-fs`, `-unallocated-only`) journal `(range_index,
+offset)` the same way. A `-fs` run over several auto-seeded volumes
+journals one flattened deleted-entry range list spanning every volume;
+resume first checks that full list still matches exactly — a range
+list changed in ANY volume refuses loudly rather than silently
+skipping bytes, so re-image and start over if the evidence moved. The
+resumed range rewinds to its 4kB block grid just before the journal
+point, so patterns straddling the interruption still match and the
+resumed detection set is identical to an uninterrupted run (the
+re-scanned window may re-report hits already printed before the kill
+— deduplicate by `(needle, offset)` when merging outputs).
 
 Batch runs (several `TARGET` files with `-checkpoint`) journal a
 per-target manifest instead of one offset. Each entry tracks its
@@ -110,9 +109,15 @@ rewrites with restored timestamps, coarse-clock filesystems,
 stale NFS attributes) all fail closed at the proof. Banked
 nested members additionally carry the archive span they derive
 from and are kept only inside verified bytes, so a prefix proof
-never blesses members outside it. Explicit `-s` starts are
-caller assertions, never proven bytes: their journals file span
-proofs a later `-resume` refuses, rescanning from zero.
+never blesses members outside it — with one qualification for
+gzip: a member's end is unknowable before it reads, so deferral
+checks the filed start alone and a hand-shrunk span end is
+trusted up to its verified bytes (same trust boundary as the
+journal itself: operator-local state, never accept a journal
+from an untrusted source). Zip and recovery extents check in
+full. Explicit `-s` starts are caller assertions, never proven
+bytes: their journals file span proofs a later `-resume`
+refuses, rescanning from zero.
 
 The honest price is re-reads: a resume sequentially re-hashes
 the bytes it skips (no detection work, usually page-cache hot),
@@ -121,10 +126,16 @@ resumes re-verify every completed range. Budget roughly one
 extra sequential pass over skipped bytes — measured on this
 machine: re-verifying a 256 MiB prefix takes ~2 s (page-cache
 hot) against a ~39 s full scan. Two contracts remain
-with the operator: quiesce writers during scans (a concurrent
-write is detected and warned — completed skips check stability
-before and after the re-hash — but exact concurrent guarantees
-need a snapshot or write exclusion the tool does not claim),
+with the operator: quiesce writers during scans. For plain
+files scanned with journaling on (`-checkpoint`), a concurrent
+write is detected and warned — the run baselines the source at
+open and re-checks at root end, and completed skips check
+stability before and after the re-hash — but uncheckpointed
+plain scans run no pre/post check, and decoded sources (EWF
+sets, split spans) carry none either: a mid-scan mutation there
+is silent this run, and the next resume's proofs fail closed
+and rescan. Exact concurrent guarantees need a snapshot or
+write exclusion the tool does not claim,
 and re-image evidence whose bytes may have changed on a medium
 that cannot be re-read identically (failing media: resume
 re-reads fault the same way the scan did, so finish bad-media

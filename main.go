@@ -68,7 +68,7 @@ func main() {
 	watchFormat := flag.String("watch-format", "csv", "Address-list format: csv or json (only with -watch)")
 	watchCount := flag.Int("watch-count", detector.WatchDefaultCount, "Addresses to derive per chain, external and change (only with -watch)")
 	balanceEndpoint := flag.String("balance-endpoint", "", "Opt-in: query ADDRESS balances from this Esplora-compatible base URL (only with -watch; leaks addresses to that server)")
-	fsPath := flag.String("fs", "", "Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT volume in FILE and scan their content")
+	fsPath := flag.String("fs", "", "Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT/XFS volume in FILE and scan their content")
 	fsOffset := flag.Int64("fs-offset", 0, "Byte offset of the volume boot sector inside FILE (only with -fs and -unallocated-only); when omitted, the partition table is followed automatically")
 	unallocatedOnly := flag.Bool("unallocated-only", false, "Scan only unallocated filesystem space (volume at -fs-offset); skips live data")
 	walkPath := flag.String("walk", "", "Sweep every regular file under DIR with the standard detectors (symlinks not followed unless -walk-follow-symlinks)")
@@ -368,8 +368,19 @@ func main() {
 		cp, err := detector.ReadCheckpoint(*checkpointPath)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// -resume overrides -s even when the
+				// checkpoint is missing: the announcement
+				// promises the beginning, so the start
+				// must be zero, not the flag's offset.
 				fmt.Fprintf(os.Stderr, "[main] No checkpoint at %s, starting from the beginning\n", *checkpointPath)
+				start = 0
 			} else {
+				// A requested resume that cannot even read
+				// its journal aborts loudly and records the
+				// attempt: exiting without a case entry
+				// would hide a failed recovery step.
+				attemptOpts := detector.Options{CaseLogPath: *caseLog, ToolVersion: version, Flags: os.Args[1:], CheckpointPath: *checkpointPath}
+				err = detector.RecordAttempt(attemptOpts, path, err)
 				fmt.Fprintf(os.Stderr, "[main] Exiting due to error: %s\n", err.Error())
 				os.Exit(1)
 			}
@@ -390,14 +401,16 @@ func main() {
 			// offset-overlap so needles straddling the 1MB
 			// journal point still match; the announcement and
 			// percent below name the rewound point actually
-			// scanned. -s keeps its exact offset and never
-			// rewinds. The detector verifies the frontier
-			// proof on its own handle before honoring it —
-			// replaced bytes rescan from zero instead of
-			// skipping contents never read. Main only
-			// pre-screens the cheap tier so the announcement
-			// names the likely point; a pass here authorizes
-			// nothing.
+			// scanned. -resume overrides -s: the rewound
+			// journal point wins over the flag's exact
+			// offset (a fresh -s scan with no -resume keeps
+			// its offset and never rewinds). The detector
+			// verifies the frontier proof on its own handle
+			// before honoring it — replaced bytes rescan
+			// from zero instead of skipping contents never
+			// read. Main only pre-screens the cheap tier so
+			// the announcement names the likely point; a
+			// pass here authorizes nothing.
 			if reject, note := detector.CheapTierReject(cp.Ident, path); reject {
 				fmt.Fprintf(os.Stderr, "[main] WARNING: %s\n", note)
 				start = 0
@@ -788,7 +801,12 @@ func runUnallocated(path string, fsOffset int64, autoSeed bool, start int64, opt
 		ranges = append(ranges, r)
 		total += r.Len
 	}
-	if len(ranges) == 0 {
+	// A fresh empty run needs no pipeline; a resume must still
+	// validate its existing journal against the current list,
+	// including an empty list (B2's invariant covers every
+	// resume: zero ranges against a nonempty journal is a changed
+	// list and refuses loudly).
+	if len(ranges) == 0 && !opts.Resume {
 		fmt.Fprintln(os.Stderr, "[main] No unallocated space to scan.")
 		return nil
 	}
