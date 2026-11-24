@@ -20,6 +20,10 @@ unreleased commits when the rename began.
   existing one- or two-gap completion flow.
 - A clean-room integration record for the useful `wheres-my-wallet` recovery
   ideas, with its secret-printing/network/checkpoint hazards explicitly rejected.
+- Offline public identity derivation for recovered BIP39 candidates: EIP-55 EVM
+  addresses at `m/44'/60'/0'/0/i` and Solana SLIP-0010 addresses at
+  `m/44'/501'/i'/0'`, independently cross-checked and emitted without private
+  material. One EVM profile covers Ethereum and compatible networks.
 - Guided target advice, multi-target scans and reports, stdin/patch scanning,
   verified password-recovery handoffs, baseline suppression, secure secret
   profiles, generated completions/man pages, and owner recovery rehearsals.
@@ -36,9 +40,10 @@ unreleased commits when the rename began.
 - `findcrypto` is the primary executable. Releases continue to publish a
   `findbtc` compatibility executable and compatibility artifacts for existing
   automation and package-manager channels.
-- Release automation uses reproducible `-trimpath` builds, current supported
-  GitHub Actions, current static-analysis tools, dual-architecture packages,
-  SBOMs, provenance, and a scratch container.
+- Release tooling uses reproducible `-trimpath` builds, current static-analysis
+  tools, dual-architecture packages, SBOMs, and a scratch container. Hosted
+  GitHub Actions were removed in favor of explicit local `core`/`full` checks
+  and manual publication; releases no longer claim hosted provenance.
 - Recovery guidance treats any address history—not only a positive current
   balance—as evidence worth investigating.
 - Watch-only activity lookups are deduplicated, cancellation-aware, and bounded

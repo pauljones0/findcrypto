@@ -4,8 +4,8 @@
 # Runs every ```sh command in docs/PASSWORD_RECOVERY.md verbatim in a scratch
 # workdir seeded with testdata/password-handoff/, then asserts each tool
 # actually cracked its corpus hash and the doc's version stamp matches the
-# tools that ran. CI (job `password-handoff`) calls this; run it locally
-# with the same arguments for the same proof.
+# tools that ran. `scripts/check.sh full` calls this locally with the pinned
+# toolchain; it can also be run directly with the same arguments.
 #
 # Convention: ```sh blocks hold runnable commands ONLY (one per line, no
 # line continuations, `#` comments skipped). Sample output lives in
@@ -115,7 +115,7 @@ findbtc -version >/dev/null
 link_tool "$HASHCAT" hashcat
 # The doc invokes bare `python3`: when $PYTHON is a wrapper (local uv) or
 # a versioned interpreter, it takes that name in the workdir. (Plain
-# `python3` with pip-installed deps — the CI shape — needs no mapping.)
+# `python3` with pip-installed deps needs no mapping.)
 if [ "$(basename "$PYTHON")" != "python3" ]; then
 	ln -s "$PYTHON" ./python3
 fi

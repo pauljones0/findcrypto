@@ -145,7 +145,7 @@ func main() {
 	resume := flag.Bool("resume", false, "Resume from -checkpoint instead of scanning from the start")
 	reportPath := flag.String("report", "", "Summarize a -json hits file (or - for stdin) instead of scanning")
 	complete := flag.Bool("complete", false, "With -report: enumerate checksum-valid completions for partial-seed (near-miss) hits (needs --reveal; local terminal only)")
-	completeOut := flag.String("complete-out", "", "With -report -complete: write candidate account keys (watch-only) to PATH for -watch (only with -complete)")
+	completeOut := flag.String("complete-out", "", "With -report -complete: write public candidate handoff (Bitcoin watch keys plus EVM/Solana addresses) to PATH (only with -complete)")
 	completeMax := flag.Int("complete-max", detector.CompleteDefaultMax, "With -report -complete: candidates shown per hit, most-likely first (only with -complete)")
 	dfxmlPath := flag.String("dfxml", "", "Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning")
 	verifyLogPath := flag.String("verify-case-log", "", "Re-hash the sources behind each record in case-log FILE and report match/mismatch instead of scanning")
@@ -1125,12 +1125,14 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 			os.Exit(1)
 		}
 		defer out.Abort()
-		fmt.Fprintln(out, "# findcrypto -complete handoff: watch-only account keys (3 per candidate).")
-		fmt.Fprintln(out, "# Candidate numbers match the terminal listing above; phrases never land in this file.")
+		fmt.Fprintln(out, "# findcrypto -complete handoff: 3 Bitcoin watch-only account keys plus public EVM/Solana recovery addresses per candidate.")
+		fmt.Fprintln(out, "# Candidate numbers match the terminal listing above; phrases and private keys never land in this file.")
+		fmt.Fprintln(out, "# Derivation assumes an empty BIP39 passphrase; a non-empty passphrase produces different keys and addresses.")
 	}
 	wordless := 0
 	completed := 0
 	totalKeys := 0
+	totalAddresses := 0
 	fmt.Printf("Seed completion (offline; %d candidate hits in %s: %d near-miss, %d all-valid checksum-failed runs):\n",
 		len(work), path, nearMisses, unordered)
 	for i, d := range work {
@@ -1180,6 +1182,16 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 				fmt.Fprintln(out, accts.XPub44)
 				fmt.Fprintln(out, accts.YPub49)
 				fmt.Fprintln(out, accts.ZPub84)
+				addresses, err := detector.SeedToRecoveryAddresses(s.Words, 1)
+				if err != nil {
+					out.Abort()
+					fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+					os.Exit(1)
+				}
+				for _, address := range addresses {
+					fmt.Fprintf(out, "# recovery-address chain=%s path=%s address=%s\n", address.Chain, address.Path, address.Address)
+					totalAddresses++
+				}
 				totalKeys += 3
 			}
 		}
@@ -1196,12 +1208,12 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
-		fmt.Printf("Wrote %d watch-only account keys to %s (3 per candidate: m/44'/0'/0' xpub, m/49'/0'/0' ypub, m/84'/0'/0' zpub).\n", totalKeys, outPath)
-		fmt.Printf("Next: findcrypto -watch %s -watch-out addrs.csv — then check those addresses from your own node (see docs/WATCH_ONLY.md). Match any candidate with address history (even a zero current balance) back to the phrase above and restore it in wallet software, offline.\n", outPath)
+		fmt.Printf("Wrote %d Bitcoin watch-only account keys and %d public recovery addresses to %s (EVM m/44'/60'/0'/0/0 and Solana m/44'/501'/0'/0').\n", totalKeys, totalAddresses, outPath)
+		fmt.Printf("Next: findcrypto -watch %s -watch-out addrs.csv derives the Bitcoin gap window. The comment-only EVM/Solana addresses can be compared with old account records without exposing a phrase; see docs/CHAIN_SUPPORT.md. These identities assume an empty BIP39 passphrase. Match any candidate with address history (even a zero current balance) back to the phrase above and restore it in wallet software, offline.\n", outPath)
 	} else if completed > 0 {
-		fmt.Println("Next: re-run with -complete-out keys.txt to derive watch-only account keys for these candidates, then findcrypto -watch keys.txt -watch-out addrs.csv.")
+		fmt.Println("Next: re-run with -complete-out keys.txt to derive Bitcoin watch-only keys plus EVM/Solana public recovery addresses, then use -watch for the Bitcoin gap window.")
 	}
-	fmt.Println("When to stop: a candidate with no transaction history on any checked address/path is likely wrong. Never reject a candidate solely because its current balance is zero: a genuine used wallet may have spent everything. If no candidate has any history, see docs/WHAT_NEXT.md.")
+	fmt.Println("Evidence rule: transaction history on a checked address/path strongly confirms a candidate, even when its current balance is zero. No history is inconclusive: a non-empty BIP39 passphrase, later index, or wallet-specific path may produce different addresses. See docs/CHAIN_SUPPORT.md and docs/WHAT_NEXT.md before ruling a candidate out.")
 }
 
 // runDFXML implements DFXML-export mode: convert saved -json hits to a

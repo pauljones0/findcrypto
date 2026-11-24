@@ -79,7 +79,10 @@ Sector-sized AG headers, encoded block numbers across AGs, attribute
 forks, and partially filled internal tree nodes are covered by regression
 tests. Hand-built v4/v5 fixtures are cross-checked with real `xfs_db`
 (`TestXFSOracleCrossCheck`), and `mkfs.xfs` supplies a real 4 KiB-sector,
-three-AG image. These checks run in Linux CI; locally they need xfsprogs.
+three-AG image. Ordinary tests run the checks when xfsprogs is on `PATH` and
+otherwise skip them; Linux `scripts/check.sh full` makes xfsprogs, Sleuth Kit,
+and Berkeley DB tools mandatory so a release-grade pass cannot skip the
+external filesystem/database oracles.
 Unwritten preallocation is excluded from file content. Realtime volumes
 and incompatible features beyond ftype, sparse inodes, metadata UUIDs,
 and bigtime are refused. Metadata checksums and the transaction log are

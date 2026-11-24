@@ -8,7 +8,7 @@ _arguments -s -S \
   '-checkpoint[Journal scan progress to FILE every 1MB for crash recovery]:value:_files' \
   '-complete[With -report: enumerate checksum-valid completions for partial-seed (near-miss) hits (needs --reveal; local terminal only)]' \
   '-complete-max[With -report -complete: candidates shown per hit, most-likely first (only with -complete)]:value:_files' \
-  '-complete-out[With -report -complete: write candidate account keys (watch-only) to PATH for -watch (only with -complete)]:value:_files' \
+  '-complete-out[With -report -complete: write public candidate handoff (Bitcoin watch keys plus EVM/Solana addresses) to PATH (only with -complete)]:value:_files' \
   '-context[Bytes carved before and after each hit (only with -extract-dir)]:value:_files' \
   '-dfxml[Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning]:value:_files' \
   '-extract-dir[Carve bytes around each hit into DIR/hit-NNNNNN.bin plus a .json sidecar (never on the scanned device itself)]:value:_files' \

@@ -6,7 +6,7 @@ complete -c findcrypto -o case-log -r -d 'Append a JSON case-log record per scan
 complete -c findcrypto -o checkpoint -r -d 'Journal scan progress to FILE every 1MB for crash recovery'
 complete -c findcrypto -o complete -d 'With -report: enumerate checksum-valid completions for partial-seed (near-miss) hits (needs --reveal; local terminal only)'
 complete -c findcrypto -o complete-max -r -d 'With -report -complete: candidates shown per hit, most-likely first (only with -complete)'
-complete -c findcrypto -o complete-out -r -d 'With -report -complete: write candidate account keys (watch-only) to PATH for -watch (only with -complete)'
+complete -c findcrypto -o complete-out -r -d 'With -report -complete: write public candidate handoff (Bitcoin watch keys plus EVM/Solana addresses) to PATH (only with -complete)'
 complete -c findcrypto -o context -r -d 'Bytes carved before and after each hit (only with -extract-dir)'
 complete -c findcrypto -o dfxml -r -d 'Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning'
 complete -c findcrypto -o extract-dir -r -d 'Carve bytes around each hit into DIR/hit-NNNNNN.bin plus a .json sidecar (never on the scanned device itself)'

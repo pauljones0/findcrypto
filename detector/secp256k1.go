@@ -6,9 +6,9 @@ import (
 )
 
 // Minimal secp256k1 for BIP32 public child derivation (CKDpub). Only what
-// watch-only derivation needs: compressed-point parsing, point addition, and
-// scalar multiplication. Verified against the published BIP32 test vectors
-// (see TestCKDPubVectors); no private-key operations exist in this file.
+// watch-only and public recovery-address derivation need: compressed-point
+// parsing, point addition, and scalar multiplication. Verified against the
+// published BIP32 and independent EVM address vectors.
 
 // Field prime p = 2^256 - 2^32 - 977.
 var secpP = func() *big.Int {

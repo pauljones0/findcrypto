@@ -431,8 +431,8 @@ func TestResolveVolumesLoudErrors(t *testing.T) {
 // TestPartitionOracleCrossCheck replays real sfdisk-made images: for each
 // <name>.img plus <name>.sfdisk (an `sfdisk -d` dump) in
 // FBT_PART_ORACLE_DIR, every parsed partition must match the tool's
-// start/size set exactly. Skipped when the dir is unset (CI has no
-// fixtures); regenerate with scripts/part-oracle.sh.
+// start/size set exactly. Skipped when the optional fixture directory is
+// unset; regenerate with scripts/part-oracle.sh.
 func TestPartitionOracleCrossCheck(t *testing.T) {
 	dir := os.Getenv("FBT_PART_ORACLE_DIR")
 	if dir == "" {

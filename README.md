@@ -32,6 +32,8 @@ Electrum seeds and wallet files, checksummed output descriptors, SLIP39
 shares, lnd channel-database markers, MetaMask vaults,
 validated Solana CLI keypair files, and the `wallet.dat` file name. Only key and phrase
 types are ever printed; the secrets themselves stay out of logs and output.
+The exact discovery/recovery/activity boundary for each ecosystem—and the next
+chain adapters—is tracked in [the chain support matrix](docs/CHAIN_SUPPORT.md).
 
 ## Installing
 
@@ -41,17 +43,21 @@ branch. That requires Go 1.26 or newer (the current supported old-stable line):
     go install github.com/pauljones0/findcrypto@main
     sudo findcrypto /dev/sda
 
-Contributors using [mise](https://mise.jdx.dev/) get the release toolchain
-pinned by `.mise.toml`; CI additionally proves the declared Go 1.26 floor and
-the current stable line.
+Contributors using [mise](https://mise.jdx.dev/) get the Go release toolchain
+pinned by `.mise.toml`; external tool pins live in `scripts/tool-versions.env`.
+Run `scripts/check.sh core` before sharing changes;
+on Linux, `scripts/check.sh full` additionally requires and executes the real
+BDB/FAT/exFAT/XFS oracles, external password tools, fuzz smoke, static analysis,
+and verified GoReleaser packages/containers. `scripts/check.sh floor` repeats
+the core checks with the pinned minimum Go toolchain.
 
-The first tagged `findcrypto` release will publish x86-64 and ARM64 archives
-for Linux, macOS, and Windows, Linux deb/rpm packages, and
-`ghcr.io/pauljones0/findcrypto`. Release assets include checksums, SPDX SBOMs,
-and Sigstore build-provenance attestations; see
-[docs/RELEASE.md](docs/RELEASE.md).
+The first tagged `findcrypto` release can be built manually as x86-64 and
+ARM64 archives for Linux, macOS, and Windows, Linux deb/rpm packages, and
+`ghcr.io/pauljones0/findcrypto`. Release assets include checksums and SPDX
+SBOMs. Hosted GitHub Actions and attestations are intentionally not used; see
+[docs/RELEASE.md](docs/RELEASE.md) for the maintainer-run process.
 
-The existing v0.2 package channels remain tested compatibility paths while the
+The existing v0.2 package channels remain pinned compatibility paths while the
 generic channels are established. They install the old `findbtc` command, whose
 behavior is retained in new releases:
 
@@ -64,9 +70,10 @@ behavior is retained in new releases:
     scoop install findbtc
 
 Do not use guessed `homebrew-findcrypto`, `scoop-findcrypto`, or Winget
-identifiers: those repositories/packages do not exist yet. CI installs the
-legacy channels on their native operating systems and separately builds and
-inspects the new `findcrypto` release packages. Full transition details are in
+identifiers: those repositories/packages do not exist yet. Their immutable
+manifests are checked by `scripts/check.sh`; hosted native install smoke was
+removed with GitHub Actions, so verify a legacy channel on its native OS before
+changing its manifest. Full transition details are in
 [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Usage
@@ -133,7 +140,7 @@ to stderr, so `-json` output stays parseable. Exit codes are a contract:
 | 0 | Follow-up modes (`-report`, `-hashes`, `-tokenlist`, `-salvage`, `-watch`) report readable-but-empty input on stdout and exit 0 — for example `No extended public keys in FILE`. Only missing or unreadable input exits 1. |
 | 1 | Runtime error or zero coverage: the root target could not be read (missing, unreadable, vanished mid-run), or a `-walk` / multi-target run scanned nothing at all. The reason is on stderr. |
 | 2 | Bad flags/usage. |
-| 3 | Hits found — but only with `-fail-on-hit`, which gates CI and pre-commit hooks (see [docs/SECRETS_PROFILE.md](docs/SECRETS_PROFILE.md)). |
+| 3 | Hits found — but only with `-fail-on-hit`, which gates local checks and pre-commit hooks (see [docs/SECRETS_PROFILE.md](docs/SECRETS_PROFILE.md)). |
 
 A bad nested archive inside a readable root stays a warning (exit 0):
 only the root target can fail the run.
@@ -241,8 +248,8 @@ BTCRecover tokenlist (case mutations included):
     findcrypto -tokenlist ./carve/hit-000001.bin -tokenlist-out tokens.txt
 
 See [docs/PASSWORD_RECOVERY.md](docs/PASSWORD_RECOVERY.md) for the
-end-to-end runbook (hashcat, John the Ripper, BTCRecover) — every
-command there runs verbatim in CI against real tools.
+end-to-end runbook (hashcat, John the Ripper, BTCRecover) — every command there
+runs verbatim through the local password-handoff harness against real tools.
 
 ### Near-miss seed phrases
 
@@ -257,8 +264,8 @@ the checksum. Overlapping evidence resolves exact first, then unordered
 runs, then near-miss windows, so one location never reports twice.
 Measured false-positive bar: zero hits on 1MB of random
 bytes and on needle-free prose (LICENSE, main.go, fixtures).
-README and GOALS name needle labels on purpose, so the repo
-self-scan expects hits there and on fixtures.
+README and GOALS name needle labels on purpose, so the controlled repository
+corpus test expects hits there and on wallet fixtures.
 
 Owner recovery can print the actual words with `--reveal`, which attaches
 them to BIP39 detections (stdout `-json` included) after a loud warning.
@@ -272,8 +279,10 @@ One or two words missing or smudged, or one wrong-but-valid word, is enumerable 
     findcrypto -report near.jsonl -complete --reveal -complete-out keys.txt
     findcrypto -watch keys.txt -watch-out addrs.csv
 
-Candidates print on the local terminal only; the keys file (watch-only
-account keys, never phrases) feeds `-watch` with no copy-paste. Past
+Candidates print on the local terminal only; the keys file contains Bitcoin
+watch-only account keys plus comment-only EVM and Solana public addresses,
+never phrases or private keys. Its Bitcoin keys feed `-watch` with no
+copy-paste. Past
 two missing words the tool refuses loudly and points at
 [BTCRecover](https://github.com/3rdIteration/btcrecover), which also
 owns scrambled-phrase reordering. Full recipe and stop rules:
@@ -408,9 +417,9 @@ as DFXML 1.1.1 for Autopsy and case pipelines:
 
 Always work from an acquisition behind a write-blocker, never the
 original; see [docs/FORENSICS.md](docs/FORENSICS.md) for the end-to-end
-workflow. Each release ships with checksums, an SBOM, and SLSA
-provenance — see [docs/RELEASE.md](docs/RELEASE.md) to verify a build
-before trusting it with evidence.
+workflow. Each release ships with checksums and an SBOM; because builds are
+maintainer-run rather than hosted-attested, independently reproduce sensitive
+casework builds as described in [docs/RELEASE.md](docs/RELEASE.md).
 
 ### Shell completion and man page
 

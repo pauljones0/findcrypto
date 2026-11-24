@@ -105,8 +105,8 @@ func TestBuildTokenlistEmpty(t *testing.T) {
 
 // Corpus wiring: the committed hit-context fixture must yield the exact
 // tokens whose combination unlocks eth-pbkdf2.json (River+Stone+2019).
-// The real crack runs in CI (scripts/password-handoff.sh); this pins the
-// generator side of that contract.
+// The real crack runs in scripts/check.sh full via password-handoff.sh; this
+// pins the generator side of that contract.
 func TestCorpusTokenlistHoldsPasswordParts(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "testdata", "password-handoff", "wallet-context.bin"))
 	if err != nil {

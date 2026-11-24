@@ -16,7 +16,7 @@ contracts:
 | Decide candidates by a positive current balance | Watch-only Esplora results now retain transaction count, lifetime funded/spent totals, balance, and `used`. A real but fully spent wallet is not discarded. |
 | Try a configurable address gap | `-watch-count` already provides bounded local derivation, defaulting to the standard 20-address gap and allowing an explicit increase. |
 | Resume a large search | Existing content-bound checkpoint/resume is stronger: journals are atomic, identity-gated, and tested across crashes and nested archive congestion. Plain mnemonic progress files are not adopted. |
-| Derive several chain-specific paths | Bitcoin BIP44/49/84 watch-only handoff remains implemented. Additional chain adapters should be added only with independent vectors, offline-by-default behavior, bounded paths, and demand; Solana keypair detection is the first new-chain addition in this migration. |
+| Derive several chain-specific paths | Bitcoin BIP44/49/84 watch-only handoff remains implemented. Recovered candidates now also derive independently verified EVM `m/44'/60'/0'/0/i` and Solana `m/44'/501'/i'/0'` public addresses offline. The next step is offline known-address matching, not automatic disclosure to a public provider. |
 
 Two-word substitution where both damaged tokens are still valid dictionary words
 is intentionally left to BTCRecover: the naive search is hundreds of millions
@@ -25,3 +25,6 @@ gaps, while BTCRecover owns large permutation and token searches.
 
 This is a clean-room behavior integration. The prototype has no declared license
 in its repository, providing another reason not to transplant its source.
+
+The current capability matrix and prioritized adapters live in
+[CHAIN_SUPPORT.md](CHAIN_SUPPORT.md).

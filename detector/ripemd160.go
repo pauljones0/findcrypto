@@ -3,7 +3,7 @@ package detector
 import "math/bits"
 
 // RIPEMD-160, one-shot. findcrypto needs it only for HASH160 (Bitcoin address
-// derivation); a small local implementation keeps the module dependency-free.
+// derivation); a small local implementation keeps this primitive self-contained.
 //
 // Algorithm: Dobbertin/Bosselaers/Preneel, "RIPEMD-160" (AB-9601). Verified
 // against Python hashlib and golang.org/x/crypto on random inputs; the

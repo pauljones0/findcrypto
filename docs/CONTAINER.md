@@ -1,8 +1,8 @@
 # Blessed container image
 
-Beginning with the first `findcrypto` tag, the release workflow publishes
-`ghcr.io/pauljones0/findcrypto`. Pull a versioned, digest-pinned image and mount
-evidence read-only:
+Beginning with the first `findcrypto` tag, a maintainer-run GoReleaser process
+publishes `ghcr.io/pauljones0/findcrypto`. Pull a versioned, digest-pinned image
+and mount evidence read-only:
 
     docker pull ghcr.io/pauljones0/findcrypto:X.Y.Z
     docker pull ghcr.io/pauljones0/findcrypto@sha256:<digest>
@@ -35,8 +35,10 @@ evidence mount.
 
 GoReleaser builds the static binaries once and copies those exact files into
 both archives/packages and the scratch image; the Dockerfile never recompiles.
-Verify the release archives and provenance as described in
-[RELEASE.md](RELEASE.md), then bind deployments to the registry digest.
+Verify the release archives and checksums as described in
+[RELEASE.md](RELEASE.md), reproduce high-assurance builds independently, then
+bind deployments to the registry digest.
 
-This keeps the original Goal 21 design: one multi-architecture pipeline, no
-emulation, no second build path, and no Helm chart for a local forensic CLI.
+This keeps the original Goal 21 design: one multi-architecture GoReleaser
+configuration, no emulation, no second build path, and no Helm chart for a
+local forensic CLI.

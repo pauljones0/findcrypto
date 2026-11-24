@@ -5,9 +5,9 @@
 # Override the binary: FINDCRYPTO=/path/to/findcrypto git commit ...
 # FINDBTC remains a compatibility fallback for existing hooks.
 #
-# Sweeps the whole worktree with the secrets profile. For large repos
-# this is slow on every commit — sweep in CI instead (see
-# samples/secrets-gate.yml) and keep the hook for small repos.
+# Sweeps the whole worktree with the secrets profile. For large repos this is
+# slow on every commit; run the same command manually before sharing changes,
+# or narrow your normal hook and schedule a full local sweep separately.
 set -u
 
 FINDCRYPTO="${FINDCRYPTO:-${FINDBTC:-}}"

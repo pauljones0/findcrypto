@@ -17,7 +17,7 @@ import (
 
 // Oracle fixtures: account keys derived by btcsuite (hdkeychain) from the
 // BIP39 test mnemonic "abandon ... about" (/tmp/xpub-oracle, kept out of the
-// repo so findcrypto stays dependency-free). SLIP132 ypub/zpub/upub/vpub forms
+// repo so watch-only derivation needs no external BIP32 library). SLIP132 ypub/zpub/upub/vpub forms
 // re-encode the same keys; addresses below are btcsuite's for both forms.
 
 // bip44MainXPub is m/44'/0'/0' (P2PKH).

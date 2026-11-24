@@ -133,8 +133,8 @@ func TestValidateSalvageVerdicts(t *testing.T) {
 	}
 }
 
-// sqliteOracle runs a real SQLite quick_check via python3 (present on
-// every CI runner): "ok" means the image opens clean.
+// sqliteOracle runs a real SQLite quick_check via python3: "ok" means the
+// image opens clean.
 func sqliteOracle(t *testing.T, path string) string {
 	t.Helper()
 	py, err := exec.LookPath("python3")

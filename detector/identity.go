@@ -29,7 +29,7 @@ import "os"
 // so FileIdentityOf reports ok=false and callers proceed straight
 // to proof verification. Unknown/exotic platforms also report
 // ok=false, and there regular files refuse all reuse (full
-// rescan): sound but slow, and outside the CI matrix.
+// rescan): sound but slow, and outside the standard local test matrix.
 type FileIdentity struct {
 	Kind string `json:"kind,omitempty"` // "posix" | "windows" | "" (unknown)
 	Dev  uint64 `json:"dev,omitempty"`  // device (posix) / volume serial (windows)

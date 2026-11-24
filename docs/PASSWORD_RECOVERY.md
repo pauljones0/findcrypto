@@ -4,8 +4,9 @@ findcrypto finds encrypted wallets; it never cracks passwords. This runbook
 takes you from a hit to a recovery attempt with hashcat, John the Ripper,
 or BTCRecover. Everything here works offline.
 
-Every `sh` command below runs verbatim in CI (job `password-handoff`)
-against the corpus in `testdata/password-handoff/` — a real cracked
+Every `sh` command below runs verbatim through `scripts/password-handoff.sh`
+and the heavyweight `scripts/check.sh full` path against the corpus in
+`testdata/password-handoff/` — a real cracked
 BDB/SQLite mkey pair, two generated Ethereum keystores, a hit-context
 file, and `passwords.txt`, the tiny crack list every §3 command tries
 (it holds each corpus password between two wrong ones, so a green run
@@ -280,9 +281,9 @@ can start; that is a salvage problem (§1), not a cracking problem.
 
 ## Verified with
 
-Every `sh` command above ran green on 2026-09-20 — locally via
-`scripts/password-handoff.sh`, the same script CI job
-`password-handoff` executes — with:
+Every `sh` command above ran green on 2026-09-20 via
+`scripts/password-handoff.sh`; the local `scripts/check.sh full` path executes
+the same harness with:
 
 - John the Ripper 1.9.0-jumbo-1 (CPU build from the openwall release
   tarball plus `scripts/john-1.9.0-jumbo-1-gcc13-blake2.patch`, a

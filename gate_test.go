@@ -582,7 +582,7 @@ func TestFailOnHitMatrix(t *testing.T) {
 			t.Errorf("%s: exit %d, want %d (stderr: %s)", c.name, exit, c.want, firstLine(stderr))
 		}
 	}
-	// The trip is loud on stderr, so CI logs explain themselves.
+	// The trip is loud on stderr, so local check logs explain themselves.
 	_, stderr, _ := runTestBinary(t, "-fail-on-hit", dirty)
 	if !strings.Contains(stderr, "exiting 3") {
 		t.Errorf("gate trip must say so on stderr, got: %s", firstLine(stderr))
@@ -992,8 +992,19 @@ func TestCompleteCLI(t *testing.T) {
 			t.Errorf("keys file lacks %s keys", prefix)
 		}
 	}
+	for _, want := range []string{
+		"chain=evm path=m/44'/60'/0'/0/0 address=0x9858EfFD232B4033E47d90003D41EC34EcaEda94",
+		"chain=solana path=m/44'/501'/0'/0' address=HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+	} {
+		if !strings.Contains(string(keysRaw), want) {
+			t.Errorf("keys file lacks recovery identity %q", want)
+		}
+	}
 	if strings.Contains(string(keysRaw), "abandon") {
 		t.Error("keys file must never hold phrase words")
+	}
+	if !strings.Contains(string(keysRaw), "empty BIP39 passphrase") {
+		t.Error("keys file must disclose its empty-passphrase assumption")
 	}
 	assertPrivateOutput(t, keys)
 	_, stderr, exit = runTestBinary(t, "-watch", keys, "-watch-out", addrs)
@@ -1015,7 +1026,7 @@ func TestCompleteCLI(t *testing.T) {
 // yields the golden tokenlist on stdout or -tokenlist-out; hits.jsonl
 // with carves reads through to the carve bytes; empty input is a
 // completed answer (exit 0), like "No crack material found". The real
-// BTCRecover crack runs in CI (scripts/password-handoff.sh); this pins
+// BTCRecover crack runs in the full local check (scripts/password-handoff.sh); this pins
 // the CLI side of that contract.
 func TestTokenlistCLI(t *testing.T) {
 	dir := t.TempDir()
@@ -1525,9 +1536,9 @@ func TestResumeUnreadableJournalCLI(t *testing.T) {
 // docs/PASSWORD_RECOVERY.md must be shaped to run verbatim under
 // scripts/password-handoff.sh (same fence convention, known lead tool,
 // no continuations, no output leaks), the harness must actually read
-// those fences, CI must invoke the harness in a `password-handoff` job,
-// and the doc's version stamp must match the CI pins. The real
-// execution happens in CI; this test pins the wiring in-repo.
+// those fences, the full local check must invoke the harness, and the doc's
+// version stamp must match the canonical local pins. This test pins the
+// wiring in-repo; scripts/check.sh full performs the real execution.
 func TestPasswordRecoveryDocCommands(t *testing.T) {
 	doc, err := os.ReadFile("docs/PASSWORD_RECOVERY.md")
 	if err != nil {
@@ -1584,26 +1595,32 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 	if !strings.Contains(string(harness), "*.pot*|*.log*|*.rec") {
 		t.Error("harness lost its john pot isolation")
 	}
-	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	check, err := os.ReadFile("scripts/check.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"password-handoff", "scripts/password-handoff.sh"} {
-		if !strings.Contains(string(ci), want) {
-			t.Errorf("ci.yml lost %q", want)
+	for _, want := range []string{"full", "scripts/password-handoff.sh"} {
+		if !strings.Contains(string(check), want) {
+			t.Errorf("check.sh lost %q", want)
 		}
 	}
-	// The stamp names the pinned tools: CI pins are the source of
+	pinsFile, err := os.ReadFile("scripts/tool-versions.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stamp names the pinned tools: tool-versions.env is the source of
 	// truth, the doc repeats them, and the harness re-checks both.
 	pins := map[string]string{
-		"JOHN_VERSION: '":        "1.9.0-jumbo-1",
-		"HASHCAT_VERSION: '":     "6.2.6",
-		"BTCR_SHA: '":            "1457088",
-		"ETH_KEYFILE_VERSION: '": "0.6.0",
+		"JOHN_VERSION=":        "1.9.0-jumbo-1",
+		"JOHN_SHA256=":         "8b40499a20fdd66d5f651b439bf9846367182bb93e8bff3fd39ba267576dd317",
+		"HASHCAT_VERSION=":     "6.2.6",
+		"BTCR_SHA=":            "1457088",
+		"ETH_KEYFILE_VERSION=": "0.6.0",
+		"SETUPTOOLS_VERSION=":  "80.9.0",
 	}
 	for key, want := range pins {
-		if !strings.Contains(string(ci), key+want) {
-			t.Errorf("ci.yml lost pin %s%s", key, want)
+		if !strings.Contains(string(pinsFile), key+want) {
+			t.Errorf("tool-versions.env lost pin %s%s", key, want)
 		}
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("doc stamp lost %q (pin %s)", want, key)
@@ -1613,7 +1630,7 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 
 // The owner rehearsal (Goal 41) runs one README block verbatim:
 // the markers must fence exactly one ```sh block of findcrypto-only
-// commands, and the harness plus CI must keep executing it.
+// commands, and the harness plus local check must keep executing it.
 func TestOwnerRehearsalWiring(t *testing.T) {
 	raw, err := os.ReadFile("README.md")
 	if err != nil {
@@ -1675,35 +1692,20 @@ func TestOwnerRehearsalWiring(t *testing.T) {
 			t.Errorf("harness lost %q", want)
 		}
 	}
-	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	check, err := os.ReadFile("scripts/check.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"owner-rehearsal", "scripts/owner-rehearsal.sh"} {
-		if !strings.Contains(string(ci), want) {
-			t.Errorf("ci.yml lost %q", want)
+	for _, want := range []string{"owner rehearsal", "scripts/owner-rehearsal.sh"} {
+		if !strings.Contains(string(check), want) {
+			t.Errorf("check.sh lost %q", want)
 		}
 	}
 }
 
-// Wiring pin, not behavior proof: the workflow sample must keep
-// invoking the same sweep the hook sample runs, so both gates agree.
-// (Behavior is proven by the flag matrix + hook test; CI YAML itself
-// only runs on GitHub.)
-func TestSecretsGateWorkflowWiring(t *testing.T) {
-	raw, err := os.ReadFile("samples/secrets-gate.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"ghcr.io/pauljones0/findcrypto",
-		"-walk /repo -profile=secrets -fail-on-hit",
-		"samples/pre-commit",
-	} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("workflow sample lost %q", want)
-		}
-	}
+// Wiring pin for the remaining local pre-commit gate. Behavior is proven by
+// the flag matrix and hook test above; no hosted workflow is shipped.
+func TestSecretsPreCommitWiring(t *testing.T) {
 	hook, err := os.ReadFile("samples/pre-commit")
 	if err != nil {
 		t.Fatal(err)

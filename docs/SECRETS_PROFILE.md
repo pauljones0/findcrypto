@@ -37,22 +37,22 @@ constants) and meets the same bar as the wallet detectors
 bytes and on the project's own prose (LICENSE, README, GOALS,
 main.go).
 
-## Gating CI and commits
+## Gating local commits and handoffs
 
 `-fail-on-hit` exits 3 when a scan, `-walk`, or `-report` finds
-anything (without it, finding hits still exits 0). Two samples ship
+anything (without it, finding hits still exits 0). A pre-commit sample ships
 in `samples/`:
 
 - Pre-commit hook: `cp samples/pre-commit .git/hooks/pre-commit`.
   Fails the commit on secrets; override the binary with
   `FINDBTC=/path/to/findcrypto`. It sweeps the whole worktree, so for
-  large repos prefer the CI gate below.
-- GitHub workflow: copy `samples/secrets-gate.yml` to
-  `.github/workflows/`. It runs the same sweep from the blessed
-  container image.
+  large repos prefer a deliberate full sweep before sharing changes.
 
-Both run `-walk -profile=secrets -fail-on-hit`, so local and CI
-gates agree by construction.
+The repository intentionally ships no hosted workflow. To gate an archive,
+release candidate, or directory explicitly, run the same command used by the
+hook:
+
+    findcrypto -walk /path/to/tree -profile=secrets -fail-on-hit -json
 
 ## Baselines for repeat sweeps
 
@@ -64,8 +64,8 @@ fingerprint:
     # review sweep.jsonl, then keep the accepted hits as the baseline:
     findcrypto -walk ~/src -profile=secrets -fail-on-hit -baseline sweep.jsonl
 
-Add the same `-baseline known.jsonl` to the pre-commit hook and the
-CI workflow so local and remote gates agree. The sweep reports
+Add the same `-baseline known.jsonl` to the pre-commit hook and any manually
+run handoff check. The sweep reports
 `N suppressed by baseline` on stderr; suppressed hits never reach
 stdout and never trip `-fail-on-hit`.
 
@@ -98,7 +98,7 @@ shell's job (`git log -p main..HEAD | ...`); findcrypto never
 interprets revisions.
 
 The two-command history gate records accepted history once, then
-fails CI only on new leaks:
+fails a local handoff check only on new leaks:
 
     git log -p --no-color --no-ext-diff --no-textconv | findcrypto -profile=secrets -patch -json - > history.jsonl
     # review history.jsonl, keep the accepted hits as known.jsonl, then gate:
@@ -109,10 +109,9 @@ key on commit + path + the patch line holding the match — never
 patch offsets, which re-ranging moves — so the same commit keys
 identically across full and ranged logs. Re-committing an accepted
 secret reports again (the leak is live again); unattributed hits
-(bytes outside any commit) never suppress. The pre-commit hook and
-CI workflow samples in `samples/` cover the worktree; add the
-history pipe alongside them where leaked-then-removed secrets
-matter.
+(bytes outside any commit) never suppress. The pre-commit hook in
+`samples/` covers the worktree; add the history pipe alongside it
+where leaked-then-removed secrets matter.
 
 Caveats: patch headers parse dependency-free from the byte stream,
 so only column-0 `commit`/`diff`/`@@` headers count (quoted diffs

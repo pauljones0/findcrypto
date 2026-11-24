@@ -533,8 +533,8 @@ func TestFAT32Unallocated(t *testing.T) {
 
 // TestFATOracleCrossCheck replays the hand-built fixtures through real
 // Sleuth Kit tools: entry names/deleted flags vs fls, deleted content
-// vs icat, geometry vs fsstat. Skipped when TSK is absent (CI has no
-// sleuthkit); run locally with fls/icat/fsstat on PATH.
+// vs icat, geometry vs fsstat. Ordinary tests skip when TSK is absent; the
+// Linux full check requires fls/icat/fsstat on PATH.
 func TestFATOracleCrossCheck(t *testing.T) {
 	for _, tool := range []string{"fls", "icat", "fsstat"} {
 		if _, err := exec.LookPath(tool); err != nil {

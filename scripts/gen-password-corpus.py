@@ -49,7 +49,7 @@ REAL_MKEY_SQLITE_HEX = (
     "43ccafef31e1953a7fef0f88f420811a9673bb6d7542800000000e014040000")
 
 PBKDF2_PASSWORD = "RiverStone2019"   # tokens: River + Stone + 2019
-PBKDF2_ITERS = 4096                  # tiny KDF: CI-crackable, still real PBKDF2
+PBKDF2_ITERS = 4096                  # tiny KDF: harness-crackable, still real PBKDF2
 SCRYPT_PASSWORD = "tide-harbor-42"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 262144, 8, 1  # geth defaults: real-world cost
 

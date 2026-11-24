@@ -1248,7 +1248,7 @@ func equalBlockSet(a, b []int64) bool {
 // TestXFSOracleCrossCheck replays the hand-built fixtures through
 // real xfs_db: superblock, AG headers, exact free extents, inode
 // fields, shortform names, and the bmbt bmap decode. Skipped when
-// xfs_db is absent; CI installs xfsprogs on Linux. The bmap case is
+// xfs_db is absent; the Linux full check requires xfsprogs. The bmap case is
 // the format proof for the
 // memory-sourced bmbt layout: xfs_db and the parser decode the
 // same bytes independently.

@@ -1513,6 +1513,33 @@ GitHub now resolves `findcrypto`, `findbtc_sandbox`, and `findbtc` to
 `pauljones0/findcrypto`; issues, discussions, topics, and dependency labels are
 enabled for the renamed project.
 
+## Goal 47 — Local verification + multichain candidate identities
+
+**Pain to completely solve:** hosted automation obscures which checks a
+maintainer can reproduce locally, while recovered BIP39 candidates can be
+verified only as Bitcoin wallets even when the original wallet was EVM or
+Solana.
+
+**Completely solved when:**
+- [x] No GitHub Actions, Action-only dependency automation, or sample workflow
+      remains in the tree; repository Actions are disabled after the final
+      push.
+- [x] Canonical tool pins and `scripts/check.sh core|floor|full` preserve source,
+      security, oracle, password-handoff, fuzz, and packaging checks locally.
+- [x] Release/container/security documentation describes manual publication
+      honestly and makes no hosted-provenance claim.
+- [x] Recovered BIP39 candidates derive independently cross-checked EIP-55 EVM
+      and SLIP-0010 Solana public addresses without returning private material
+      or making network calls.
+- [x] `-complete-out` keeps its Bitcoin `-watch` handoff while adding
+      comment-only EVM/Solana identities, and the chain matrix distinguishes
+      discovery, recovery, and activity coverage.
+
+**Verify:** formatting, build, vet, focused chain vectors, CLI handoff tests,
+full Go tests, vulnerability/static analysis, packaging metadata, and a clean
+tree with no workflow YAML. Because Actions are intentionally disabled, the
+verification record is local and explicit.
+
 ## Commit policy
 
 Commits and pushes need the user's explicit ask in the session (per Git

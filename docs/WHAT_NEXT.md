@@ -138,14 +138,15 @@ one-position substitution search, covering one wrong-but-valid word:
     findcrypto -report near.jsonl -complete --reveal -complete-out keys.txt
     findcrypto -watch keys.txt -watch-out addrs.csv
 
-The first command re-scans with words attached (required — completion
-needs the words). The second prints the checksum-valid candidates on
-your local terminal only, plus watch-only account keys per candidate
-(no copy-paste: the keys file feeds `-watch` directly). The third
-derives addresses you can check from your own node (see
-`docs/WATCH_ONLY.md`). Match the candidate with address history back to the
-phrase on your terminal and restore that one phrase in wallet
-software, offline — then delete the output.
+The first command re-scans with words attached (required — completion needs the
+words). The second prints checksum-valid candidates on your local terminal and
+writes three Bitcoin watch-only account keys plus comment-only EVM and Solana
+public addresses per candidate—never phrases or private keys. The third derives
+the Bitcoin gap window (see `docs/WATCH_ONLY.md`). Compare the EVM/Solana public
+addresses with records you already control or a trusted local node; see
+`docs/CHAIN_SUPPORT.md`. Match any address history back to the candidate on your
+terminal and restore that one phrase in wallet software, offline—then delete the
+output.
 
 Smudged paper, no scan? Write the words you have into a text file
 with `xxxx` for each missing word (any non-word letter-run works —

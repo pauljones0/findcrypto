@@ -9,7 +9,7 @@ import (
 )
 
 // Goal 13: directory-tree sweeps. Fixture trees are built in TempDir;
-// TestWalkSelfScanRepo sweeps this repository itself.
+// TestWalkRepoCorpus sweeps a controlled mirror of representative repo files.
 
 const walkProse = "the quick brown fox jumps over the lazy dog\n" +
 	"pack my box with five dozen liquor jugs\n" +
@@ -214,17 +214,34 @@ func TestWalkBadRoot(t *testing.T) {
 	}
 }
 
-// TestWalkSelfScanRepo sweeps this repository: the documented fixture
-// needles must show up, and needle-free prose/code (LICENSE, main.go)
-// must stay silent. README.md and GOALS.md intentionally name needle
-// labels, so hits there are expected and counted, not failures.
-func TestWalkSelfScanRepo(t *testing.T) {
-	if testing.Short() {
-		t.Skip("self-scan needs the full tree; skipped in -short mode")
+// TestWalkRepoCorpus sweeps a controlled mirror of representative repository
+// files. Using the live checkout made this test depend on ignored build output
+// (a local dist/ snapshot added hundreds of megabytes) and Git implementation
+// details, neither of which tests directory walking or detector precision.
+func TestWalkRepoCorpus(t *testing.T) {
+	root := t.TempDir()
+	for _, fixture := range []struct{ src, dst string }{
+		{"../LICENSE", "LICENSE"},
+		{"../main.go", "main.go"},
+		{"../README.md", "README.md"},
+		{"../GOALS.md", "GOALS.md"},
+		{"testdata/test_wallet.dat", "detector/testdata/test_wallet.dat"},
+	} {
+		raw, err := os.ReadFile(fixture.src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, fixture.dst)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	stats, dets := collectWalk(t, "..", WalkOptions{})
+	stats, dets := collectWalk(t, root, WalkOptions{})
 	if stats.Files == 0 {
-		t.Fatal("self-scan found no files")
+		t.Fatal("repo corpus scan found no files")
 	}
 	fixture := false
 	docHits := 0
@@ -241,11 +258,11 @@ func TestWalkSelfScanRepo(t *testing.T) {
 		}
 	}
 	if !fixture {
-		t.Error("self-scan missed the documented test_wallet.dat needles")
+		t.Error("repo corpus scan missed the documented test_wallet.dat needles")
 	}
 	if docHits == 0 {
 		t.Error("expected the documented needle mentions in README/GOALS to register")
 	}
-	t.Logf("self-scan: %d files, %d detections (%d doc mentions), %d failures",
+	t.Logf("repo corpus: %d files, %d detections (%d doc mentions), %d failures",
 		stats.Files, stats.Detections, docHits, stats.FailedTotal)
 }

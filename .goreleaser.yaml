@@ -67,7 +67,7 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# SPDX SBOM per archive, generated with syft in release.yml.
+# SPDX SBOM per archive, generated with syft during a manual release.
 sboms:
   - artifacts: archive
 

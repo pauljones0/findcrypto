@@ -8,7 +8,7 @@ import (
 
 // blkGetSize64 is BLKGETSIZE64 (_IOR(0x12,114,u64)): the ioctl that
 // reports a block device's size in bytes. Defined locally so the
-// build needs no external modules (stdlib syscall lacks the const).
+// build needs no platform helper module (stdlib syscall lacks the const).
 const blkGetSize64 = 0x80081272
 
 func FileSize(path string) (int64, error) {
