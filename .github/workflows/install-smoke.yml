@@ -80,11 +80,14 @@ jobs:
         run: |
           brew tap pauljones0/findbtc
           brew install pauljones0/findbtc/findbtc
-      - name: version matches the installed legacy channel
+      - name: version matches the frozen v0.2 channel
         run: |
-          expected="$(brew list --versions findbtc | awk '{print $2}')"
-          test -n "$expected"
-          findbtc -version | grep -Fq "$expected"
+          installed="$(
+            brew info --cask --json=v2 pauljones0/findbtc/findbtc |
+              jq -er '.casks[0].installed // empty'
+          )"
+          test "$installed" = "0.2.0"
+          test "$(findbtc -version)" = "findbtc $installed"
       - name: synthetic scan
         run: |
           printf 'x wallet.dat y' > /tmp/fbt-smoke.bin

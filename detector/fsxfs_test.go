@@ -1248,8 +1248,8 @@ func equalBlockSet(a, b []int64) bool {
 // TestXFSOracleCrossCheck replays the hand-built fixtures through
 // real xfs_db: superblock, AG headers, exact free extents, inode
 // fields, shortform names, and the bmbt bmap decode. Skipped when
-// xfs_db is absent (CI has no xfsprogs); run locally with xfsprogs
-// on PATH. The bmap case is the format proof for the
+// xfs_db is absent; CI installs xfsprogs on Linux. The bmap case is
+// the format proof for the
 // memory-sourced bmbt layout: xfs_db and the parser decode the
 // same bytes independently.
 func TestXFSOracleCrossCheck(t *testing.T) {
@@ -1290,15 +1290,32 @@ func TestXFSOracleCrossCheck(t *testing.T) {
 			t.Errorf("sb lacks %q:\n%s", want, sb)
 		}
 	}
-	agf := run(v5, "agf 0", "print roots levels flfirst flcount freeblks longest refcntroot refcntlevel rmapblocks refcntblocks")
+	agf := run(v5, "agf 0", "print")
 	for _, want := range []string{
-		"roots[0-2] = 0:1 1:2 2:4", "levels[0-2] = 0:1 1:1 2:1",
 		"flfirst = 1", "flcount = 1", "freeblks = 43", "longest = 40",
 		"refcntroot = 12", "refcntlevel = 1", "rmapblocks = 1", "refcntblocks = 1",
 	} {
 		if !strings.Contains(agf, want) {
 			t.Errorf("agf lacks %q:\n%s", want, agf)
 		}
+	}
+	// xfs_db 6.18 replaced the roots/levels arrays with named scalar fields;
+	// both presentations decode the same on-disk AGF words.
+	legacyRoots := []string{"roots[0-2] = 0:1 1:2 2:4", "levels[0-2] = 0:1 1:1 2:1"}
+	namedRoots := []string{
+		"bnoroot = 1", "cntroot = 2", "rmaproot = 4",
+		"bnolevel = 1", "cntlevel = 1", "rmaplevel = 1",
+	}
+	hasAll := func(wants []string) bool {
+		for _, want := range wants {
+			if !strings.Contains(agf, want) {
+				return false
+			}
+		}
+		return true
+	}
+	if !hasAll(legacyRoots) && !hasAll(namedRoots) {
+		t.Errorf("agf lacks recognized root/level fields:\n%s", agf)
 	}
 	// Free BLOCKS must match my Unallocated exactly. Compared as
 	// sets, not lines: freesp -d lists raw btree records plus

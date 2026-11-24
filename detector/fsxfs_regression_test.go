@@ -116,7 +116,16 @@ func TestXFSRealSectorGeometry(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Close()
-	if out, err := exec.Command(mkfs, "-f", "-s", "size=4096", "-d", "agcount=3", path).CombinedOutput(); err != nil {
+	args := []string{"-f", "-s", "size=4096", "-d", "agcount=3"}
+	// Newer mkfs.xfs releases enable nrext64 by default. This test is
+	// specifically about sector geometry, while OpenXFS deliberately rejects
+	// the nrext64 inode layout. Pin that optional feature off when the local
+	// mkfs supports the switch; older releases neither expose nor default it.
+	if help, _ := exec.Command(mkfs, "-i", "help").CombinedOutput(); bytes.Contains(help, []byte("nrext64")) {
+		args = append(args, "-i", "nrext64=0")
+	}
+	args = append(args, path)
+	if out, err := exec.Command(mkfs, args...).CombinedOutput(); err != nil {
 		t.Fatalf("mkfs: %v\n%s", err, out)
 	}
 	vol, _ := openTestXFS(t, path)
