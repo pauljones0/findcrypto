@@ -8,8 +8,9 @@
 # asserts the transcript and artifacts.
 #
 # Usage: owner-rehearsal.sh REPO WORKPARENT
-#   FINDBTC   findbtc binary (default: findbtc)
-#   PYTHON    python interpreter (default: python3)
+#   FINDCRYPTO  findcrypto binary (default: findcrypto, then findbtc)
+#   FINDBTC     legacy fallback when FINDCRYPTO is unset
+#   PYTHON      python interpreter (default: python3)
 #
 # Matrix (see .agents/plans/2026-09-20-g41-rehearsal-matrix.md):
 # hostile-but-valid filenames reach native argv byte-exact; decoy
@@ -20,12 +21,29 @@ set -euo pipefail
 
 REPO=${1:?usage: owner-rehearsal.sh REPO WORKPARENT}
 WORKPARENT=${2:?usage: owner-rehearsal.sh REPO WORKPARENT}
-FINDBTC=${FINDBTC:-findbtc}
+FINDCRYPTO=${FINDCRYPTO:-${FINDBTC:-}}
+if [ -z "$FINDCRYPTO" ]; then
+	if command -v findcrypto >/dev/null 2>&1; then
+		FINDCRYPTO=findcrypto
+	else
+		FINDCRYPTO=findbtc
+	fi
+fi
 PYTHON=${PYTHON:-python3}
 case "$PYTHON" in
 */*) ;;
 *) PYTHON=$(command -v "$PYTHON") || { echo "python interpreter not found: $PYTHON" >&2; exit 1; } ;;
 esac
+case "$FINDCRYPTO" in
+*/*)
+	FINDCRYPTO_DIR=$(cd "$(dirname "$FINDCRYPTO")" && pwd -P) || exit 1
+	FINDCRYPTO=$FINDCRYPTO_DIR/$(basename "$FINDCRYPTO") ;;
+*) FINDCRYPTO=$(command -v "$FINDCRYPTO") || { echo "findcrypto/findbtc binary not found" >&2; exit 1; } ;;
+esac
+if [ ! -x "$FINDCRYPTO" ]; then
+	echo "findcrypto/findbtc binary is not executable: $FINDCRYPTO" >&2
+	exit 1
+fi
 
 mkdir -p "$WORKPARENT"
 WORK=$(mktemp -d "$WORKPARENT/rehearsal.XXXXXX")
@@ -40,12 +58,13 @@ cp "$REPO/testdata/password-handoff/eth-pbkdf2.json" media/
 PASSWORD=$(grep -o 'RiverStone2019' "$REPO/testdata/password-handoff/passwords.txt" | head -n 1)
 test -n "$PASSWORD"
 
-# The README block invokes bare `findbtc`: stage that name.
-case "$FINDBTC" in
-*/*) ln -s "$FINDBTC" ./findbtc ;;
-*) FINDBTC=$(command -v "$FINDBTC") || { echo "findbtc not found" >&2; exit 1; }; ln -s "$FINDBTC" ./findbtc ;;
-esac
+# Current docs invoke bare `findcrypto`; stage the legacy `findbtc` alias too
+# so old command blocks and callers continue to exercise the same binary.
+ln -s "$FINDCRYPTO" ./findcrypto
+ln -s "$FINDCRYPTO" ./findbtc
 export PATH=$WORK:$PATH
+"$WORK/findcrypto" -version >/dev/null
+"$WORK/findbtc" -version >/dev/null
 
 if command -v sha256sum >/dev/null 2>&1; then
 	SHA=sha256sum
@@ -108,7 +127,7 @@ expect_absent() {
 }
 
 # README path: advise routes, batch scans clean, report guides.
-expect 'Recommended: findbtc' 'advise prints a recommendation'
+expect 'Recommended: findcrypto' 'advise prints a recommendation'
 expect '[COMPLETE]' 'batch completed'
 expect 'Triage:' 'report summarizes detections'
 expect 'Hits by target:' 'report groups by target'
@@ -123,7 +142,7 @@ expect ': OK media/owner.img' 'verify-case-log confirms the clean batch'
 # come back in the JSON target field byte-identical.
 for target in 'media/spaced name.img' "media/dollar\$'quote.img" 'media/line
 break.img' 'media/café.img'; do
-	if "$WORK/findbtc" -json "$target" > hostile.jsonl 2>hostile.stderr; then
+	if "$WORK/findcrypto" -json "$target" > hostile.jsonl 2>hostile.stderr; then
 		echo "PASS: scanned $(printf %s "$target" | head -c 40)"
 	else
 		echo "FAIL: scan of hostile name failed: $target" >&2
@@ -150,7 +169,7 @@ if bad:
 done
 
 # Decoy: clean means clean — empty hits with full coverage.
-if "$WORK/findbtc" -json media/decoy.bin > decoy.jsonl 2>decoy.stderr; then
+if "$WORK/findcrypto" -json media/decoy.bin > decoy.jsonl 2>decoy.stderr; then
 	echo "PASS: decoy exit 0"
 else
 	echo "FAIL: decoy scan exit $?" >&2
@@ -162,7 +181,7 @@ grep -q 'WARNING' decoy.stderr && { echo "FAIL: decoy warned" >&2; fail=1; } || 
 
 # Partial batch: locked/missing targets warn loudly but exit 0.
 set +e
-"$WORK/findbtc" -json -case-log partial.case.jsonl media/owner.img media/locked.bin media/gone.img media/cut.img > partial.hits.jsonl 2>partial.stderr
+"$WORK/findcrypto" -json -case-log partial.case.jsonl media/owner.img media/locked.bin media/gone.img media/cut.img > partial.hits.jsonl 2>partial.stderr
 code=$?
 set -e
 if [ "$AS_ROOT" = 1 ]; then
@@ -172,7 +191,7 @@ else
 	grep -q 'WARNING' partial.stderr || { echo "FAIL: partial batch never warned" >&2; fail=1; }
 fi
 grep -q 'COMPLETE' partial.stderr || { echo "FAIL: partial batch never completed" >&2; fail=1; }
-"$WORK/findbtc" -verify-case-log partial.case.jsonl > verify.out 2>&1
+"$WORK/findcrypto" -verify-case-log partial.case.jsonl > verify.out 2>&1
 grep -q "NOT SCANNED .*gone.img" verify.out || { echo "FAIL: missing target lacks NOT SCANNED" >&2; fail=1; }
 if [ "$AS_ROOT" = 0 ]; then
 	grep -q "NOT SCANNED .*locked.bin" verify.out || { echo "FAIL: locked target lacks NOT SCANNED" >&2; fail=1; }
@@ -181,7 +200,7 @@ echo "PASS: partial batch + case-log verification"
 
 # A lone missing root fails the run loudly (exit 1).
 set +e
-"$WORK/findbtc" media/gone.img >missing.out 2>missing.stderr
+"$WORK/findcrypto" media/gone.img >missing.out 2>missing.stderr
 code=$?
 set -e
 test "$code" = 1 || { echo "FAIL: missing root exit $code, want 1" >&2; fail=1; }
@@ -189,16 +208,16 @@ grep -qi 'cannot\|missing\|no such' missing.stderr || { echo "FAIL: missing root
 echo "PASS: missing root exits 1 loudly"
 
 # Encrypted fixture: crack material out, password stays in.
-"$WORK/findbtc" -hashes media/eth-pbkdf2.json > hashes.out 2>hashes.stderr
+"$WORK/findcrypto" -hashes media/eth-pbkdf2.json > hashes.out 2>hashes.stderr
 test -s hashes.out || { echo "FAIL: -hashes empty" >&2; fail=1; }
 echo "PASS: -hashes extracts crack material"
-"$WORK/findbtc" -tokenlist media/owner.img -tokenlist-out tokens.txt >/dev/null 2>&1
+"$WORK/findcrypto" -tokenlist media/owner.img -tokenlist-out tokens.txt >/dev/null 2>&1
 test -s tokens.txt || { echo "FAIL: -tokenlist empty" >&2; fail=1; }
 echo "PASS: -tokenlist runs on owner media"
 
 # No fixture secret in default outputs (transcript, hits, report,
 # hashes); positive controls prove the bytes were really there.
-"$WORK/findbtc" -report hits.jsonl > report.out 2>&1
+"$WORK/findcrypto" -report hits.jsonl > report.out 2>&1
 for f in transcript.log hits.jsonl report.out hashes.out; do
 	expect_absent "$REH_TPRV" "$f" "tprv absent from default $f"
 	expect_absent "$REH_MNEMONIC" "$f" "mnemonic absent from default $f"

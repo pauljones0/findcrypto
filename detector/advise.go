@@ -63,7 +63,7 @@ func Advise(path string) (Advice, error) {
 	head := adviseHead(f)
 	// Container magic is decisive (8 exact bytes): no filesystem or
 	// partition table can start with it, so it routes before the
-	// shape probes. EWF2 has no findbtc path — the reasons carry
+	// shape probes. EWF2 has no direct findcrypto path — the reasons carry
 	// the libewf conversion pointer with no command.
 	if len(head) >= len(ewf2Signature) && bytes.Equal(head[:len(ewf2Signature)], ewf2Signature) {
 		return adviseEWF2(path)
@@ -74,13 +74,13 @@ func Advise(path string) (Advice, error) {
 		return adviseRaw(path, fi, fmt.Sprintf("starts with EWF magic (%s): pass the image file itself — chunks decode and verify automatically (multi-segment sets: pass .E01/.s01)", ewfFlavorName(path)))
 	}
 	if kind, _, err := OpenFS(f, 0); err == nil {
-		ad.Command = fmt.Sprintf("findbtc -fs %s", shellQuote(path))
+		ad.Command = fmt.Sprintf("findcrypto -fs %s", shellQuote(path))
 		ad.Reasons = []string{
 			fmt.Sprintf("%s opens as %s at offset 0", path, kind),
 			"deleted entries recover with filenames; live content scans raw anyway",
 		}
 		ad.Also = []string{
-			fmt.Sprintf("findbtc -unallocated-only %s  (free space only, no filenames)", shellQuote(path)),
+			fmt.Sprintf("findcrypto -unallocated-only %s  (free space only, no filenames)", shellQuote(path)),
 		}
 		return ad, nil
 	}
@@ -94,13 +94,13 @@ func Advise(path string) (Advice, error) {
 		}
 		if len(kinds) > 0 {
 			ad.partKind = kinds
-			ad.Command = fmt.Sprintf("findbtc -fs %s", shellQuote(path))
+			ad.Command = fmt.Sprintf("findcrypto -fs %s", shellQuote(path))
 			ad.Reasons = []string{
 				fmt.Sprintf("%s table with %d partitions (%s)", strings.ToUpper(ad.scheme), len(parts), strings.Join(kinds, "+")),
 				"auto-seed scans every supported volume; no -fs-offset needed",
 			}
 			ad.Also = []string{
-				fmt.Sprintf("findbtc -unallocated-only %s  (free space only, no filenames)", shellQuote(path)),
+				fmt.Sprintf("findcrypto -unallocated-only %s  (free space only, no filenames)", shellQuote(path)),
 			}
 			return ad, nil
 		}
@@ -164,7 +164,7 @@ func adviseFollowupOrRaw(path string, fi os.FileInfo, head []byte) (Advice, erro
 func adviseHashes(path, evidence string) (Advice, error) {
 	return Advice{
 		Target:  path,
-		Command: fmt.Sprintf("findbtc -hashes %s", shellQuote(path)),
+		Command: fmt.Sprintf("findcrypto -hashes %s", shellQuote(path)),
 		Reasons: []string{
 			evidence,
 			"-hashes exports the crack-ready hash without scanning (runbook docs/PASSWORD_RECOVERY.md)",
@@ -203,7 +203,7 @@ func adviseWatch(path string, headLen int, pubs []string) (Advice, error) {
 	}
 	return Advice{
 		Target:  path,
-		Command: fmt.Sprintf("findbtc -watch %s", shellQuote(path)),
+		Command: fmt.Sprintf("findcrypto -watch %s", shellQuote(path)),
 		Reasons: []string{
 			evidence,
 			"-watch derives watch-only addresses locally with no network calls",
@@ -233,7 +233,7 @@ func ewfFlavorName(path string) string {
 }
 
 // adviseEWF2 answers an EWF2 container with the documented
-// conversion pointer and no command: there is no findbtc path for
+// conversion pointer and no command: there is no direct findcrypto path for
 // Ex01/Lx01, so a "Recommended" line would be a lie.
 func adviseEWF2(path string) (Advice, error) {
 	return Advice{
@@ -258,7 +258,7 @@ func adviseDir(path string) (Advice, error) {
 		ad.Reasons = []string{fmt.Sprintf("%s is an empty directory: nothing to scan", path)}
 		return ad, nil
 	}
-	ad.Command = fmt.Sprintf("findbtc -walk %s", shellQuote(path))
+	ad.Command = fmt.Sprintf("findcrypto -walk %s", shellQuote(path))
 	ad.Reasons = []string{
 		fmt.Sprintf("%s is a directory", path),
 		"sweeps every regular file with the standard detectors (symlinks not followed unless -walk-follow-symlinks)",
@@ -282,14 +282,14 @@ func adviseRaw(path string, fi os.FileInfo, why string) (Advice, error) {
 		sizeNote = fmt.Sprintf(" (%s)", humanBytes(sz))
 		size = sz
 	}
-	ad.Command = fmt.Sprintf("findbtc %s", shellQuote(path))
+	ad.Command = fmt.Sprintf("findcrypto %s", shellQuote(path))
 	ad.Reasons = []string{
 		fmt.Sprintf("%s%s: %s", path, sizeNote, why),
 		"raw scan covers every byte; hits lack filenames",
 	}
 	if size >= 1<<30 {
 		ad.Also = []string{
-			fmt.Sprintf("findbtc -checkpoint resume.journal %s  (interruptible: resume with -resume)", shellQuote(path)),
+			fmt.Sprintf("findcrypto -checkpoint resume.journal %s  (interruptible: resume with -resume)", shellQuote(path)),
 		}
 	}
 	return ad, nil

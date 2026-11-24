@@ -11,65 +11,80 @@ on:
   schedule:
     - cron: '23 5 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   packaging:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: packaging pins bind release checksums
         run: python3 scripts/verify-packaging-pins.py
       - name: pin verifier self-test (offline fixtures)
         run: python3 scripts/verify-packaging-pins.py --self-test
       - name: goreleaser config valid
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: '~> v2'
           args: check
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: stable
-      - name: snapshot deb/rpm carry completions, man, orphan docs
-        uses: goreleaser/goreleaser-action@v6
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: snapshot release artifacts
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: '~> v2'
           args: release --snapshot --clean --skip=publish,announce,sbom
-      - name: install snapshot deb and prove the payload
+      - name: prove the dual-command container
+        run: |
+          test "$(docker image inspect ghcr.io/pauljones0/findcrypto:latest-amd64 --format '{{.Architecture}} {{.Config.User}} {{join .Config.Entrypoint " "}}')" = "amd64 65534:65534 /usr/bin/findcrypto"
+          test "$(docker image inspect ghcr.io/pauljones0/findcrypto:latest-arm64 --format '{{.Architecture}}')" = "arm64"
+          docker run --rm ghcr.io/pauljones0/findcrypto:latest-amd64 -version | grep -q '^findcrypto '
+          docker run --rm --entrypoint /usr/bin/findbtc ghcr.io/pauljones0/findcrypto:latest-amd64 -version | grep -q '^findbtc '
+      - name: install snapshot deb and prove findcrypto plus findbtc compatibility
         run: |
           set -euo pipefail
-          deb=$(ls dist/*.deb | grep -i amd64 | head -1)
+          deb=$(find dist -maxdepth 1 -type f -name 'findcrypto*amd64.deb' | head -1)
           test -n "$deb"
-          test -n "$(ls dist/*.rpm)"
-          dpkg-deb -c "$deb" | grep -E "usr/share/man/man1/findbtc.1|bash-completion/completions/findbtc|zsh/vendor-completions/_findbtc|zsh/site-functions/_findbtc|fish/vendor_completions.d/findbtc.fish|BENCHMARKS.md|PIPELINE_INGEST.md|RESOURCE_BOUNDS.md"
+          test -n "$(find dist -maxdepth 1 -type f -name 'findcrypto*.rpm' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -type f -name 'findbtc*amd64.deb' -print -quit)"
+          dpkg-deb -f "$deb" Provides Conflicts Replaces | grep -q findbtc
+          dpkg-deb -c "$deb" | grep -E "usr/bin/findcrypto|usr/bin/findbtc|usr/share/man/man1/findcrypto.1|bash-completion/completions/findcrypto|zsh/vendor-completions/_findcrypto|zsh/site-functions/_findcrypto|fish/vendor_completions.d/findcrypto.fish|BENCHMARKS.md|PIPELINE_INGEST.md|RESOURCE_BOUNDS.md"
           sudo dpkg -i "$deb"
-          test -f /usr/share/man/man1/findbtc.1
-          test -f /usr/share/bash-completion/completions/findbtc
-          test -f /usr/share/zsh/vendor-completions/_findbtc
-          test -f /usr/share/zsh/site-functions/_findbtc
-          test -f /usr/share/fish/vendor_completions.d/findbtc.fish
-          test -f /usr/share/doc/findbtc/BENCHMARKS.md
-          test -f /usr/share/doc/findbtc/PIPELINE_INGEST.md
-          test -f /usr/share/doc/findbtc/RESOURCE_BOUNDS.md
-          man -l /usr/share/man/man1/findbtc.1 | grep -q "SEE ALSO"
-          bash -n /usr/share/bash-completion/completions/findbtc
+          test -x /usr/bin/findcrypto
+          test -x /usr/bin/findbtc
+          /usr/bin/findcrypto -version
+          /usr/bin/findbtc -version
+          test -f /usr/share/man/man1/findcrypto.1
+          test -f /usr/share/bash-completion/completions/findcrypto
+          test -f /usr/share/zsh/vendor-completions/_findcrypto
+          test -f /usr/share/zsh/site-functions/_findcrypto
+          test -f /usr/share/fish/vendor_completions.d/findcrypto.fish
+          test -f /usr/share/doc/findcrypto/BENCHMARKS.md
+          test -f /usr/share/doc/findcrypto/PIPELINE_INGEST.md
+          test -f /usr/share/doc/findcrypto/RESOURCE_BOUNDS.md
+          man -l /usr/share/man/man1/findcrypto.1 | grep -q "SEE ALSO"
+          bash -n /usr/share/bash-completion/completions/findcrypto
           sudo apt-get update -q && sudo apt-get install -y -q zsh fish > /dev/null
-          zsh -n /usr/share/zsh/vendor-completions/_findbtc
-          fish --no-execute /usr/share/fish/vendor_completions.d/findbtc.fish
+          zsh -n /usr/share/zsh/vendor-completions/_findcrypto
+          fish --no-execute /usr/share/fish/vendor_completions.d/findcrypto.fish
 
   brew-smoke:
     runs-on: macos-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: install from tap
+      - name: legacy v0.2 compatibility - install from findbtc tap
         run: |
           brew tap pauljones0/findbtc
           brew install pauljones0/findbtc/findbtc
-      - name: version matches latest release
+      - name: version matches the installed legacy channel
         run: |
-          tag="$(gh release view --json tagName -q .tagName -R pauljones0/findbtc)"
-          findbtc -version | grep -q "${tag#v}"
+          expected="$(brew list --versions findbtc | awk '{print $2}')"
+          test -n "$expected"
+          findbtc -version | grep -Fq "$expected"
       - name: synthetic scan
         run: |
           printf 'x wallet.dat y' > /tmp/fbt-smoke.bin
@@ -79,8 +94,6 @@ jobs:
 
   scoop-smoke:
     runs-on: windows-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: install scoop
         shell: pwsh
@@ -91,18 +104,18 @@ jobs:
           # inherit; export both bin dirs explicitly.
           "$env:USERPROFILE\scoop\shims" | Out-File -Append $env:GITHUB_PATH
           "$env:USERPROFILE\scoop\apps\scoop\current\bin" | Out-File -Append $env:GITHUB_PATH
-      - name: install from bucket
+      - name: legacy v0.2 compatibility - install from findbtc bucket
         shell: pwsh
         run: |
           scoop bucket add findbtc https://github.com/pauljones0/scoop-findbtc
           scoop install findbtc
-      - name: version matches latest release
+      - name: version matches the installed legacy channel
         shell: pwsh
         run: |
-          $tag = (gh release view --json tagName -q .tagName -R pauljones0/findbtc).Trim()
+          $expected = (scoop cat findbtc | Out-String | ConvertFrom-Json).version
           (& scoop which findbtc) | Out-Null
           $out = & (scoop which findbtc) -version
-          if ($out -notmatch $tag.TrimStart('v')) { throw "version '$out' lacks $tag" }
+          if ($out -notmatch [regex]::Escape($expected)) { throw "version '$out' lacks $expected" }
       - name: synthetic scan
         shell: pwsh
         run: |
@@ -116,11 +129,11 @@ jobs:
   winget-smoke:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: documented raw URLs fetch the same manifests
         shell: pwsh
         run: |
-          $base = "https://raw.githubusercontent.com/pauljones0/findbtc/${{ github.sha }}/packaging/winget"
+          $base = "https://raw.githubusercontent.com/pauljones0/findcrypto/${{ github.sha }}/packaging/winget"
           foreach ($f in @('pauljones0.findbtc.yaml', 'pauljones0.findbtc.installer.yaml', 'pauljones0.findbtc.locale.en-US.yaml')) {
             Invoke-WebRequest -Uri "$base/$f" -OutFile "$env:RUNNER_TEMP/$f"
             if ((Get-FileHash "$env:RUNNER_TEMP/$f").Hash -ne (Get-FileHash "packaging/winget/$f").Hash) { throw "$f differs from raw fetch" }
@@ -131,7 +144,7 @@ jobs:
       - name: enable local-manifest installs
         shell: pwsh
         run: winget settings --enable LocalManifestFiles
-      - name: install from local manifests
+      - name: legacy v0.2 compatibility - install from findbtc manifests
         shell: pwsh
         run: winget install --manifest packaging/winget --accept-package-agreements --accept-source-agreements
       - name: version and synthetic scan
@@ -144,7 +157,9 @@ jobs:
               Select-Object -First 1 -ExpandProperty FullName
           }
           if (-not $exe) { throw 'findbtc not on PATH nor under WinGet Packages' }
-          & $exe -version
+          $expected = (Get-Content packaging/winget/pauljones0.findbtc.yaml -Raw | Select-String -Pattern '(?m)^PackageVersion:\s*(\S+)' -AllMatches).Matches[0].Groups[1].Value
+          $version = & $exe -version
+          if ($version -notmatch [regex]::Escape($expected)) { throw "version '$version' lacks $expected" }
           $smoke = Join-Path $env:TEMP 'fbt-smoke.bin'
           Set-Content -NoNewline -Path $smoke -Value 'x wallet.dat y'
           & $exe -json $smoke 2> $env:TEMP\fbt-wsmoke.err | Out-File $env:TEMP\fbt-wsmoke.jsonl

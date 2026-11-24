@@ -1,6 +1,6 @@
 // DFXML export: detections as Digital Forensics XML so case tools that
 // speak DFXML (fiwalk-style pipelines, feature-file annotators) can
-// consume findbtc hits with byte-precise locations.
+// consume findcrypto hits with byte-precise locations.
 package detector
 
 import (
@@ -12,10 +12,15 @@ import (
 // DFXMLSchemaVersion is the dfxml_schema version the output adheres to.
 const DFXMLSchemaVersion = "1.1.1"
 
-// FindbtcDFXMLNS carries findbtc-specific hit detail that DFXML's
-// fileobject has no native element for. The schema allows foreign
-// namespaces after hashdigest (lax), so validators skip it cleanly.
-const FindbtcDFXMLNS = "https://github.com/jakewins/findbtc/ns/dfxml#"
+// FindcryptoDFXMLNS is the legacy, frozen namespace for findcrypto-specific
+// hit detail. Its historical URL and XML prefix are retained because namespace
+// identifiers are evidence contracts, not branding. The DFXML schema allows
+// foreign elements here, so validators skip them cleanly.
+const FindcryptoDFXMLNS = "https://github.com/jakewins/findbtc/ns/dfxml#"
+
+// FindbtcDFXMLNS is retained for source compatibility.
+// Deprecated: use FindcryptoDFXMLNS.
+const FindbtcDFXMLNS = FindcryptoDFXMLNS
 
 type dfxmlDoc struct {
 	XMLName      xml.Name          `xml:"dfxml"`
@@ -62,10 +67,10 @@ type dfxmlHitDetail struct {
 func WriteDFXML(w io.Writer, toolVersion string, dets []Detection) error {
 	doc := dfxmlDoc{
 		Xmlns:        "http://www.forensicswiki.org/wiki/Category:Digital_Forensics_XML",
-		XmlnsFindbtc: FindbtcDFXMLNS,
+		XmlnsFindbtc: FindcryptoDFXMLNS,
 		Version:      DFXMLSchemaVersion,
 		Metadata: dfxmlMetadata{
-			Tool:     "findbtc",
+			Tool:     "findcrypto",
 			Version:  toolVersion,
 			Exported: time.Now().UTC().Format(time.RFC3339),
 		},

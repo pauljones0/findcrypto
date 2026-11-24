@@ -1,4 +1,4 @@
-# Watch-only balance triage
+# Watch-only activity triage
 
 You found an extended public key (`xpub`/`ypub`/`zpub`, or testnet
 `tpub`/`upub`/`vpub`). It cannot spend funds, but it derives every address
@@ -7,7 +7,7 @@ without touching private material. The instinctive move — pasting the key
 into a block-explorer website — hands your entire wallet history to a
 stranger and is the #1 phishing pattern in recovery. Do this instead:
 
-1. Derive the addresses **locally** with `findbtc -watch` (offline).
+1. Derive the addresses **locally** with `findcrypto -watch` (offline).
 2. Check the exported address list anywhere: your own node, a Tor-routed
    client, or — least private — a public explorer, one address at a time.
 
@@ -16,9 +16,9 @@ stranger and is the #1 phishing pattern in recovery. Do this instead:
 From a carve, a pasted key file, or a scan's `hits.jsonl` (whose carves are
 searched automatically):
 
-    findbtc -watch ./carve/hit-000003.bin -watch-out addrs.csv
-    findbtc -watch hits.jsonl -watch-out addrs.csv
-    findbtc -watch key.txt -watch-format json -watch-count 50 > addrs.json
+    findcrypto -watch ./carve/hit-000003.bin -watch-out addrs.csv
+    findcrypto -watch hits.jsonl -watch-out addrs.csv
+    findcrypto -watch key.txt -watch-format json -watch-count 50 > addrs.json
 
 Each run derives `-watch-count` addresses (default 20, the BIP44 gap limit)
 on both the external (`0/i`) and change (`1/i`) chains. The script type
@@ -38,18 +38,26 @@ chain/index/path, script) — never the extended key itself. The
 fingerprint is `HASH160(pubkey)[:4]` in hex, the descriptor convention,
 so you can match an export back to its source key.
 
-Private extended keys (`xprv`, ...) are refused outright: findbtc never
+Private extended keys (`xprv`, ...) are refused outright: findcrypto never
 derives from, stores, or prints private material. If your carve holds one,
 move it to an offline machine and sweep to a fresh wallet.
 
-## Optional balance lookup
+## Optional activity lookup
 
 `-balance-endpoint` queries an **Esplora-compatible** server
-(`GET {endpoint}/address/:addr`) and fills the `balance_sats` column
-(confirmed plus mempool). It is strictly opt-in: without the flag the
-tool makes zero network calls (enforced by test).
+(`GET {endpoint}/address/:addr`) and fills confirmed-plus-mempool activity:
 
-    findbtc -watch key.txt -balance-endpoint http://localhost:50001 -watch-out addrs.csv
+- `balance_sats`: funded minus spent;
+- `tx_count`: transaction history count;
+- `funded_txo_sum` and `spent_txo_sum`: lifetime flow in satoshis; and
+- `used`: true when the address has any history, including a fully spent wallet.
+
+It is strictly opt-in: without the flag the tool makes zero network calls
+(enforced by test). A successful lookup for a never-used address writes explicit
+zeroes and `used=false`; a failed or incomplete lookup leaves every activity
+field empty. Unknown therefore never masquerades as unused.
+
+    findcrypto -watch key.txt -balance-endpoint http://localhost:50001 -watch-out addrs.csv
 
 Consent warning: the endpoint operator learns every address you query,
 which is your full wallet footprint. Prefer, in order:
@@ -58,7 +66,7 @@ which is your full wallet footprint. Prefer, in order:
    or a [mempool.space](https://github.com/mempool/mempool) backend
    against your own Bitcoin Core over `localhost` leaks nothing.
 2. **Your node over Tor.** Point the endpoint at the daemon's onion
-   address so network observers see only Tor traffic. findbtc honors the
+   address so network observers see only Tor traffic. findcrypto honors the
    standard `HTTP_PROXY`/`HTTPS_PROXY` environment variables, so
    `HTTPS_PROXY=socks5://127.0.0.1:9050` routes lookups through Tor —
    but the endpoint server itself still sees the addresses.
@@ -67,9 +75,14 @@ which is your full wallet footprint. Prefer, in order:
    send an extended public key to any server — only individual
    addresses, and only as many as you need.
 
-Lookups are sequential and best-effort: per-address failures print to
-stderr, successes are still written, and unknown balances stay empty
-rather than reading as zero.
+Lookups are best-effort with at most eight requests in flight: per-address
+failures print to stderr, successes are still written, and unknown activity
+stays empty rather than reading as zero. The bound keeps a large watch from
+creating an unbounded burst, but a public endpoint can still rate-limit you;
+prefer your own node and increase `-watch-count` deliberately. Library callers
+can cancel through `LookupActivityContext`. Do not stop at `balance_sats=0`: a
+`used=true` address may be the strongest evidence that a recovered candidate
+was once the real wallet.
 
 ## Limits
 
@@ -77,5 +90,5 @@ rather than reading as zero.
   merchants) may need a higher `-watch-count` (max 10000).
 - Only single-signature BIP32/44/49/84 layouts derive: multisig and
   script-path wallets need their full descriptors.
-- An address list proves funds exist, not that you can spend them —
+- Address activity proves history exists, not that you can spend anything —
   spending still needs the seed or private keys the scan was hunting.

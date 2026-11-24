@@ -13,21 +13,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
-// testBinary is a built findbtc used by subprocess exit-code tests.
+// testBinary is a built findcrypto used by subprocess exit-code tests.
 // Built once in TestMain so flag/exit behavior is tested through the
 // real CLI surface, not by calling run* helpers in-process.
 var testBinary string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "findbtc-gate-test")
+	dir, err := os.MkdirTemp("", "findcrypto-gate-test")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "test setup:", err)
 		os.Exit(1)
 	}
-	testBinary = filepath.Join(dir, "findbtc-test")
+	testBinary = filepath.Join(dir, "findcrypto-test")
 	if runtime.GOOS == "windows" {
 		testBinary += ".exe"
 	}
@@ -59,6 +59,20 @@ func runTestBinary(t *testing.T, args ...string) (stdout, stderr string, exit in
 	return outBuf.String(), errBuf.String(), exit
 }
 
+func assertPrivateOutput(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("%s mode = %04o, want 0600", path, got)
+	}
+}
+
 // runTestBinaryStdin runs the test binary with stdin closed over input.
 func runTestBinaryStdin(t *testing.T, input string, args ...string) (stdout, stderr string, exit int) {
 	t.Helper()
@@ -80,7 +94,7 @@ func runTestBinaryStdin(t *testing.T, input string, args ...string) (stdout, std
 }
 
 // advisedCommand runs -advise on dir and returns the Recommended
-// line with the findbtc binary name swapped for the test binary
+// line with the findcrypto binary name swapped for the test binary
 // (quoted, since it may hold spaces).
 func advisedCommand(t *testing.T, dir string) string {
 	t.Helper()
@@ -89,7 +103,7 @@ func advisedCommand(t *testing.T, dir string) string {
 		t.Fatalf("-advise exit %d", exit)
 	}
 	for _, line := range strings.Split(stdout, "\n") {
-		if rest, ok := strings.CutPrefix(line, "Recommended: findbtc "); ok {
+		if rest, ok := strings.CutPrefix(line, "Recommended: findcrypto "); ok {
 			return `"` + testBinary + `" ` + rest
 		}
 	}
@@ -810,10 +824,10 @@ func TestPreCommitSample(t *testing.T) {
 }
 
 // The -report -complete contract (Goal 32): a follow-up, not a mode.
-// Flag misuse exits 2; a smudged-word file completes end to end with
-// the original word among the candidates; crafted 3-gap input refuses
-// loudly toward BTCRecover; -complete-out feeds -watch with no
-// copy-paste.
+// Flag misuse exits 2; smudged and wrong-valid-word files complete end to
+// end with the original word among the candidates; a long unordered run and
+// crafted 3-gap input refuse loudly toward BTCRecover; -complete-out feeds
+// -watch with no copy-paste.
 func TestCompleteCLI(t *testing.T) {
 	dir := t.TempDir()
 	// Smudged-paper recipe: 11 known words + xxxx placeholder.
@@ -866,11 +880,83 @@ func TestCompleteCLI(t *testing.T) {
 			t.Errorf("stderr lacks %q: %s", want, firstLine(stderr))
 		}
 	}
+	// All 12 words are valid dictionary words, but "above" replaced the
+	// checksum-valid final "about". The scan labels this an unordered run;
+	// -complete must route it to exhaustive one-position substitution and
+	// retain deterministic typo-first ordering.
+	wrongValid := writeGateFile(t, dir, "wrong-valid.txt",
+		"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon above\n")
+	wrongRaw, err := exec.Command(testBinary, "--reveal", "-json", wrongValid).Output()
+	if err != nil {
+		t.Fatalf("cannot generate wrong-valid completion fixture: %v", err)
+	}
+	if !strings.Contains(string(wrongRaw), `"needle":"bip39-unordered"`) {
+		t.Fatalf("wrong-valid fixture must scan as unordered, got: %s", firstLine(string(wrongRaw)))
+	}
+	wrongHits := writeGateFile(t, dir, "wrong-valid.jsonl", string(wrongRaw))
+	stdout, _, exit := runTestBinary(t, "-report", wrongHits, "-complete", "--reveal", "-complete-max", "1")
+	if exit != 0 {
+		t.Fatalf("wrong-valid completion exit %d", exit)
+	}
+	for _, want := range []string{
+		"1542 checksum-valid completions",
+		"strategy=one-position-substitution",
+		"swaps and reordering are not searched",
+		"candidate 1: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("wrong-valid completion lacks %q:\n%s", want, stdout)
+		}
+	}
+	// The existing sequential-word-pile fixture is also an exact seed length.
+	// It now gets the same explicitly bounded substitution strategy rather than
+	// the old blanket unordered refusal; the warning still rejects reordering.
+	wordPile := writeGateFile(t, dir, "word-pile.txt",
+		"abandon ability able about above absent absorb abstract absurd abuse access accident\n")
+	wordPileRaw, err := exec.Command(testBinary, "--reveal", "-json", wordPile).Output()
+	if err != nil {
+		t.Fatalf("cannot generate word-pile fixture: %v", err)
+	}
+	wordPileHits := writeGateFile(t, dir, "word-pile.jsonl", string(wordPileRaw))
+	stdout, _, exit = runTestBinary(t, "-report", wordPileHits, "-complete", "--reveal", "-complete-max", "1")
+	if exit != 0 {
+		t.Fatalf("word-pile completion exit %d", exit)
+	}
+	for _, want := range []string{
+		"1607 checksum-valid completions",
+		"strategy=one-position-substitution",
+		"candidate 1: abandon ability marble about above absent absorb abstract absurd abuse access accident",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("word-pile completion lacks %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "REFUSED") {
+		t.Errorf("exact-length word pile must reach substitution search:\n%s", stdout)
+	}
+	// A 13-word unordered run remains outside the bounded search and refuses
+	// with the explicit reordering handoff.
+	longPile := writeGateFile(t, dir, "long-word-pile.txt",
+		"abandon ability able about above absent absorb abstract absurd abuse access accident abandon\n")
+	longRaw, err := exec.Command(testBinary, "--reveal", "-json", longPile).Output()
+	if err != nil {
+		t.Fatalf("cannot generate long word-pile fixture: %v", err)
+	}
+	longHits := writeGateFile(t, dir, "long-word-pile.jsonl", string(longRaw))
+	stdout, _, exit = runTestBinary(t, "-report", longHits, "-complete", "--reveal", "-complete-max", "1")
+	if exit != 0 {
+		t.Fatalf("long word-pile refusal exit %d, want 0", exit)
+	}
+	for _, want := range []string{"REFUSED", "not a seed length", "BTCRecover", "reordering"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("long word-pile refusal lacks %q:\n%s", want, stdout)
+		}
+	}
 	// Crafted 3-gap input refuses loudly toward BTCRecover, exit 0
 	// (completed triage, like "no crack material").
 	refusal := writeGateFile(t, dir, "refusal.jsonl",
 		`{"description":"Found 'bip39-12-near-miss gaps=[0,1,2]' at x","needle":"bip39-12-near-miss","offset":0,"target":"x","block_offset":0,"match_length":10,"words":["xxxx","xxxx","xxxx","abandon","abandon","abandon","abandon","abandon","abandon","abandon","abandon","abandon"]}`+"\n")
-	stdout, _, exit := runTestBinary(t, "-report", refusal, "-complete", "--reveal")
+	stdout, _, exit = runTestBinary(t, "-report", refusal, "-complete", "--reveal")
 	if exit != 0 {
 		t.Errorf("refusal exit %d, want 0", exit)
 	}
@@ -882,6 +968,14 @@ func TestCompleteCLI(t *testing.T) {
 	// Handoff: -complete-out keys feed -watch with no copy-paste.
 	keys := filepath.Join(dir, "keys.txt")
 	addrs := filepath.Join(dir, "addrs.csv")
+	for _, path := range []string{keys, addrs} {
+		if err := os.WriteFile(path, []byte("stale"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, _, exit = runTestBinary(t, "-report", hits, "-complete", "--reveal", "-complete-max", "2", "-complete-out", keys)
 	if exit != 0 {
 		t.Fatalf("complete-out exit %d", exit)
@@ -901,6 +995,7 @@ func TestCompleteCLI(t *testing.T) {
 	if strings.Contains(string(keysRaw), "abandon") {
 		t.Error("keys file must never hold phrase words")
 	}
+	assertPrivateOutput(t, keys)
 	_, stderr, exit = runTestBinary(t, "-watch", keys, "-watch-out", addrs)
 	if exit != 0 {
 		t.Fatalf("watch handoff exit %d (stderr: %s)", exit, firstLine(stderr))
@@ -913,6 +1008,7 @@ func TestCompleteCLI(t *testing.T) {
 	if len(lines) != 1+6*2*20 { // header + 6 keys x 2 chains x 20
 		t.Errorf("handoff derived %d CSV rows, want %d", len(lines), 1+6*2*20)
 	}
+	assertPrivateOutput(t, addrs)
 }
 
 // The -tokenlist contract (Goal 33): flag misuse exits 2; a context file
@@ -942,7 +1038,7 @@ func TestTokenlistCLI(t *testing.T) {
 			t.Errorf("%s: exit %d, want %d (stderr: %s)", c.name, exit, c.want, firstLine(stderr))
 		}
 	}
-	want := "# findbtc tokenlist: 3 base words, one line each.\n" +
+	want := "# findcrypto tokenlist: 3 base words, one line each.\n" +
 		"# Same-line tokens are mutually exclusive variants; tune --max-tokens.\n" +
 		"kern KERN Kern\nriver RIVER River\n2019\n"
 	stdout, _, _ := runTestBinary(t, "-tokenlist", ctx)
@@ -950,6 +1046,12 @@ func TestTokenlistCLI(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
 	out := filepath.Join(dir, "tokens.txt")
+	if err := os.WriteFile(out, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(out, 0644); err != nil {
+		t.Fatal(err)
+	}
 	stdout, _, exit := runTestBinary(t, "-tokenlist", ctx, "-tokenlist-out", out)
 	if exit != 0 {
 		t.Fatalf("tokenlist-out exit %d", exit)
@@ -961,6 +1063,7 @@ func TestTokenlistCLI(t *testing.T) {
 	if string(raw) != want {
 		t.Errorf("file = %q, want %q", raw, want)
 	}
+	assertPrivateOutput(t, out)
 	if !strings.Contains(stdout, "Wrote 3 token lines") || !strings.Contains(stdout, "btcrecover.py") {
 		t.Errorf("file mode must report + point at BTCRecover, got: %s", firstLine(stdout))
 	}
@@ -1052,6 +1155,33 @@ func TestHashesCLI(t *testing.T) {
 	if exit != 1 {
 		t.Errorf("missing file exit %d, want 1", exit)
 	}
+}
+
+func TestSalvageOutputPrivate(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "wallet.salvage.db")
+	if err := os.WriteFile(out, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(out, 0644); err != nil {
+		t.Fatal(err)
+	}
+	wallet := filepath.Join("detector", "testdata", "test_wallet.dat")
+	stdout, stderr, exit := runTestBinary(t, "-salvage", wallet, "-salvage-out", out)
+	if exit != 0 {
+		t.Fatalf("salvage-out exit %d (stderr: %s)", exit, firstLine(stderr))
+	}
+	if !strings.Contains(stdout, "Wrote "+out) {
+		t.Errorf("salvage-out did not report output: %s", firstLine(stdout))
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= len("stale") {
+		t.Fatalf("salvage output was not replaced: %d bytes", len(raw))
+	}
+	assertPrivateOutput(t, out)
 }
 
 // Follow-up modes agree on empty input (Goal 43): readable input
@@ -1152,10 +1282,10 @@ func TestAdviseFollowupCLI(t *testing.T) {
 		path string
 		want string
 	}{
-		{"keystore to hashes", keystore, "Recommended: findbtc -hashes "},
-		{"mkey to hashes", mkeyPath, "Recommended: findbtc -hashes "},
-		{"keys to watch", keys, "Recommended: findbtc -watch "},
-		{"EWF to image scan", ewfPath, "Recommended: findbtc " + ewfPath},
+		{"keystore to hashes", keystore, "Recommended: findcrypto -hashes "},
+		{"mkey to hashes", mkeyPath, "Recommended: findcrypto -hashes "},
+		{"keys to watch", keys, "Recommended: findcrypto -watch "},
+		{"EWF to image scan", ewfPath, "Recommended: findcrypto " + ewfPath},
 	} {
 		stdout, stderr, exit := runTestBinary(t, "-advise", tc.path)
 		if exit != 0 {
@@ -1430,7 +1560,7 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 	for _, c := range cmds {
 		lead := strings.SplitN(c, " ", 2)[0]
 		switch lead {
-		case "findbtc", "hashcat", "john", "python3":
+		case "findcrypto", "hashcat", "john", "python3":
 		default:
 			t.Errorf("doc command has unknown lead tool %q: %s", lead, c)
 		}
@@ -1482,7 +1612,7 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 }
 
 // The owner rehearsal (Goal 41) runs one README block verbatim:
-// the markers must fence exactly one ```sh block of findbtc-only
+// the markers must fence exactly one ```sh block of findcrypto-only
 // commands, and the harness plus CI must keep executing it.
 func TestOwnerRehearsalWiring(t *testing.T) {
 	raw, err := os.ReadFile("README.md")
@@ -1526,8 +1656,8 @@ func TestOwnerRehearsalWiring(t *testing.T) {
 	}
 	for _, c := range cmds {
 		lead := strings.SplitN(c, " ", 2)[0]
-		if lead != "findbtc" {
-			t.Errorf("rehearsal command has non-findbtc lead %q: %s", lead, c)
+		if lead != "findcrypto" {
+			t.Errorf("rehearsal command has non-findcrypto lead %q: %s", lead, c)
 		}
 		if strings.HasSuffix(c, "\\") {
 			t.Errorf("rehearsal command uses continuations (harness runs one line at a time): %s", c)
@@ -1566,7 +1696,7 @@ func TestSecretsGateWorkflowWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"ghcr.io/pauljones0/findbtc",
+		"ghcr.io/pauljones0/findcrypto",
 		"-walk /repo -profile=secrets -fail-on-hit",
 		"samples/pre-commit",
 	} {
@@ -1888,9 +2018,9 @@ func helpFlagNames(t *testing.T) []string {
 // -h flag must appear in every shell's script.
 func TestGeneratedCompletionsFresh(t *testing.T) {
 	shells := map[string]string{
-		"bash": "packaging/completion/findbtc.bash",
-		"zsh":  "packaging/completion/_findbtc",
-		"fish": "packaging/completion/findbtc.fish",
+		"bash": "packaging/completion/findcrypto.bash",
+		"zsh":  "packaging/completion/_findcrypto",
+		"fish": "packaging/completion/findcrypto.fish",
 	}
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		stdout, stderr, exit := runTestBinary(t, "-gen-completion="+shell)
@@ -1957,7 +2087,7 @@ func TestGeneratedManFresh(t *testing.T) {
 	if exit != 0 {
 		t.Fatalf("-gen-man exit %d (stderr: %s)", exit, firstLine(stderr))
 	}
-	raw, err := os.ReadFile("packaging/man/findbtc.1")
+	raw, err := os.ReadFile("packaging/man/findcrypto.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1975,6 +2105,50 @@ func TestGeneratedManFresh(t *testing.T) {
 		if !strings.Contains(string(raw), d) {
 			t.Errorf("man page SEE ALSO lacks orphan doc %s", d)
 		}
+	}
+}
+
+// The one-cycle findbtc compatibility binary is built from the same source,
+// but its installed man page and completions must name the command users
+// actually invoke and must track every current flag.
+func TestGeneratedCompatibilityAssetsFresh(t *testing.T) {
+	compat := filepath.Join(filepath.Dir(testBinary), "findbtc")
+	if runtime.GOOS == "windows" {
+		compat += ".exe"
+	}
+	if err := os.Link(testBinary, compat); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(compat)
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(compat, args...)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("findbtc %v: %v (stderr: %s)", args, err, firstLine(stderr.String()))
+		}
+		return stdout.String()
+	}
+	for _, tc := range []struct {
+		args []string
+		path string
+	}{
+		{[]string{"-gen-completion=bash"}, "packaging/completion/findbtc.bash"},
+		{[]string{"-gen-completion=zsh"}, "packaging/completion/_findbtc"},
+		{[]string{"-gen-completion=fish"}, "packaging/completion/findbtc.fish"},
+		{[]string{"-gen-man"}, "packaging/man/findbtc.1"},
+	} {
+		raw, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := run(tc.args...); got != string(raw) {
+			t.Errorf("%s drifted: regenerate it with the findbtc compatibility binary", tc.path)
+		}
+	}
+	if got := strings.TrimSpace(run("-version")); !strings.HasPrefix(got, "findbtc ") {
+		t.Errorf("compatibility version identity = %q, want findbtc", got)
 	}
 }
 

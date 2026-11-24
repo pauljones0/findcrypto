@@ -134,7 +134,7 @@ func BuildTokenlist(data []byte, max int) (string, TokenlistStats) {
 	}
 	stats.Lines = len(shown)
 	var b strings.Builder
-	fmt.Fprintf(&b, "# findbtc tokenlist: %d base words, one line each.\n", len(words))
+	fmt.Fprintf(&b, "# findcrypto tokenlist: %d base words, one line each.\n", len(words))
 	b.WriteString("# Same-line tokens are mutually exclusive variants; tune --max-tokens.\n")
 	for _, w := range shown {
 		b.WriteString(strings.Join(TokenVariants(w), " "))

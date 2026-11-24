@@ -60,6 +60,7 @@ func TestClassifyNeedle(t *testing.T) {
 		"channel.backup":     {"lightning-lnd", "low", false},
 		"channel.db":         {"lightning-lnd", "low", false},
 		"metamask-vault":     {"metamask-vault", "high", true},
+		"solana-keypair":     {"solana-keypair", "high", false},
 		"pem-private-key":    {"pem-private-key", "high", false},
 		"aws-access-key":     {"aws-access-key", "high", false},
 		"github-token":       {"github-token", "high", false},
@@ -284,11 +285,12 @@ func TestSummarizeGoal6Playbook(t *testing.T) {
 		reportFixtureDetection("open-chan-bucket", "/dev/sda", 50),
 		reportFixtureDetection("channel.backup", "/dev/sda", 60),
 		reportFixtureDetection("metamask-vault", "/dev/sda", 70),
+		reportFixtureDetection("solana-keypair", "/dev/sda", 80),
 	}
 	rep := Summarize(dets)
 	joined := strings.Join(rep.Playbook, "\n")
 	for _, want := range []string{"Electrum seed", "Electrum wallet file", "Output descriptor",
-		"SLIP39 Shamir share", "Lightning (lnd)", "MetaMask vault"} {
+		"SLIP39 Shamir share", "Lightning (lnd)", "MetaMask vault", "Solana CLI keypair"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("playbook lacks %q:\n%s", want, joined)
 		}

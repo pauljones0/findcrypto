@@ -3,8 +3,8 @@
 `-walk` sweeps every regular file under a directory with the standard
 detectors — the mode for laptops, live systems, and repos:
 
-    findbtc -walk /home/user -json > sweep.jsonl
-    findbtc -report sweep.jsonl
+    findcrypto -walk /home/user -json > sweep.jsonl
+    findcrypto -report sweep.jsonl
 
 Add `-extract-dir ./carve` to keep bytes around each hit, and
 `-case-log sweep-case.jsonl` for one JSON record per file swept

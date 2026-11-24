@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
 // Batch crash/resume boundary proof (Goal 42): a real SIGKILLed
@@ -385,7 +385,7 @@ func TestBatchResumeRealSIGKILL(t *testing.T) {
 	// most one such window.
 	assertMultisetCover(t, "carves", map[string]int{}, resumedCarves, fullCarves, bound+1)
 	for _, e := range readDirNames(t, carveKill) {
-		if strings.HasPrefix(e, ".findbtc-tmp-") {
+		if strings.HasPrefix(e, ".findcrypto-tmp-") {
 			t.Errorf("staging file %s left behind; resume must reap it", e)
 		}
 	}

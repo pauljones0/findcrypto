@@ -89,7 +89,9 @@ func (r *gzipTargetReader) compressedConsumed() int64 {
 }
 
 func (r *gzipTargetReader) ReadAt(p []byte, off int64) (n int, err error) {
-	return -1, fmt.Errorf("indexed reads of gzip files not yet implemented")
+	// io.ReaderAt requires n to be the number of bytes actually copied and
+	// therefore never negative, even when the operation is unsupported.
+	return 0, fmt.Errorf("indexed reads of gzip files not yet implemented")
 }
 func (r *gzipTargetReader) Read(p []byte) (n int, err error) {
 	return r.r.Read(p)

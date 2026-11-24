@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
 func countOpen(t *testing.T, path string) int {

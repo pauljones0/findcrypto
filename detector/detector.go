@@ -73,7 +73,7 @@ func trimEdgeFragments(data []byte, first, final bool, isWordChar func(byte) boo
 // including the widest seed phrase, keystore, and Goal 6 format spans.
 func scanOverlap() int {
 	max := bip39MaxSpan + 1
-	for _, span := range []int{keystoreMaxSpan, electrumMaxSpan, electrumFileMaxSpan, descriptorMaxSpan, slip39MaxSpan, metamaskMaxSpan, secretsMaxSpan} {
+	for _, span := range []int{keystoreMaxSpan, electrumMaxSpan, electrumFileMaxSpan, descriptorMaxSpan, slip39MaxSpan, metamaskMaxSpan, solanaKeypairMaxSpan, secretsMaxSpan} {
 		if span+1 > max {
 			max = span + 1
 		}
@@ -2583,7 +2583,7 @@ var needles = [][]byte{
 	// (expected hundreds of thousands of random hits per terabyte).
 }
 
-// Scan blocks for traces of bitcoin wallets, the function will
+// Scan blocks for validated cryptocurrency wallet traces. The function will
 // wait in blocks on in until it sees EOF, and output scanned blocks
 // to out for reuse.
 func detectWallets(ctx context.Context, in chan *Block, out chan *Block, onDetection func(Detection), onComplete func(), opts Options, secrets bool) {
@@ -2649,6 +2649,7 @@ func detectWallets(ctx context.Context, in chan *Block, out chan *Block, onDetec
 		exact, near, unordered := findBIP39Phrases(data, block.offset, block.overlap == 0, block.final)
 		electrumSeeds := findElectrumSeeds(data, block.offset, block.overlap == 0, block.final)
 		slip39Seeds := findSLIP39(data, block.offset, block.overlap == 0, block.final)
+		solanaKeypairs := findSolanaKeypairs(data, block.offset)
 		for _, m := range exact {
 			if m.endAbs > block.offset+int64(block.overlap) {
 				label := fmt.Sprintf("bip39-%d", m.words)
@@ -2883,6 +2884,26 @@ func detectWallets(ctx context.Context, in chan *Block, out chan *Block, onDetec
 					if err := carveDetection(block.source, &d, carve.dir, carve.contextBytes, seq, opts.logWriter()); err != nil {
 						opts.logf("[carve] warning: could not carve '%s' at %s byte %d: %s\n",
 							label, d.Target, d.Offset, err.Error())
+					}
+				}
+				onDetection(d)
+			}
+		}
+		for _, m := range solanaKeypairs {
+			if m.endAbs > block.offset+int64(block.overlap) {
+				d := Detection{
+					Description: fmt.Sprintf("Found 'solana-keypair' at %s", block.location),
+					Needle:      "solana-keypair",
+					Offset:      m.startAbs,
+					Target:      block.source.Describe(),
+					BlockOffset: block.offset + int64(block.overlap),
+					MatchLen:    int(m.endAbs - m.startAbs),
+				}
+				if carve.dir != "" {
+					seq++
+					if err := carveDetection(block.source, &d, carve.dir, carve.contextBytes, seq, opts.logWriter()); err != nil {
+						opts.logf("[carve] warning: could not carve 'solana-keypair' at %s byte %d: %s\n",
+							d.Target, d.Offset, err.Error())
 					}
 				}
 				onDetection(d)

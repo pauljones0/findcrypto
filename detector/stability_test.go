@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
 // The Detection JSON wire format is frozen per schema/hits-v1.json (Tier

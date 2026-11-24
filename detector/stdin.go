@@ -80,7 +80,7 @@ func ScanStdinWithOptions(r io.Reader, startOffset int64, opts Options, onDetect
 	if err := ctx.Err(); err != nil {
 		return recordAttempt(opts, StdinTargetName, fmt.Errorf("cannot scan stdin: %w", err))
 	}
-	spill, err := os.CreateTemp(stdinSpillDir, "findbtc-stdin-*")
+	spill, err := os.CreateTemp(stdinSpillDir, "findcrypto-stdin-*")
 	if err != nil {
 		return recordAttempt(opts, StdinTargetName, fmt.Errorf("cannot scan stdin: cannot create spill file: %w", err))
 	}

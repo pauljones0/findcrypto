@@ -147,7 +147,7 @@ func (r *caseRecorder) finish(status string, runErr error) CaseLog {
 	defer r.mu.Unlock()
 	size, _ := r.seed.Size()
 	log := CaseLog{
-		Tool:     "findbtc",
+		Tool:     "findcrypto",
 		Version:  r.version,
 		Started:  r.start.Format(time.RFC3339),
 		Finished: time.Now().UTC().Format(time.RFC3339),
@@ -203,7 +203,7 @@ func recordAttempt(opts Options, path string, runErr error) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := CaseLog{
-		Tool:     "findbtc",
+		Tool:     "findcrypto",
 		Version:  opts.ToolVersion,
 		Started:  now,
 		Finished: now,
@@ -228,18 +228,25 @@ func RecordAttempt(opts Options, path string, runErr error) error {
 	return recordAttempt(opts, path, runErr)
 }
 
-// appendCaseLog appends one record to the JSONL case log.
+// appendCaseLog appends one record to the JSONL case log. Case logs expose
+// source paths, command flags, and evidence hashes; keep them owner-only even
+// when the caller points at a pre-existing permissive file.
 func appendCaseLog(path string, log CaseLog) error {
 	raw, err := json.Marshal(log)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if err := f.Chmod(0600); err != nil {
+		return err
+	}
 	raw = append(raw, '\n')
-	_, err = f.Write(raw)
-	return err
+	if _, err := f.Write(raw); err != nil {
+		return err
+	}
+	return f.Sync()
 }

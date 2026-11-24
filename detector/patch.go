@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"hash"
 	"io"
-	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -363,7 +363,8 @@ func rewritePatchSidecars(dets []Detection, log io.Writer) {
 			logLinef(log, "[patch] warning: could not re-marshal %s: %s\n", d.CarvePath, err.Error())
 			continue
 		}
-		if err := os.WriteFile(sidecarPathFor(d.CarvePath), append(sidecar, '\n'), 0644); err != nil {
+		path := sidecarPathFor(d.CarvePath)
+		if err := writeFileAtomic(filepath.Dir(path), filepath.Base(path), append(sidecar, '\n')); err != nil {
 			logLinef(log, "[patch] warning: could not rewrite sidecar for %s: %s\n", d.CarvePath, err.Error())
 		}
 	}

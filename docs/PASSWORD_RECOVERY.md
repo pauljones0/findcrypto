@@ -1,6 +1,6 @@
 # Password recovery runbook
 
-findbtc finds encrypted wallets; it never cracks passwords. This runbook
+findcrypto finds encrypted wallets; it never cracks passwords. This runbook
 takes you from a hit to a recovery attempt with hashcat, John the Ripper,
 or BTCRecover. Everything here works offline.
 
@@ -16,14 +16,14 @@ for the corpus names — the flags stay the same. Sample output lives in
 
 ## 0. Get the tools
 
-You need findbtc plus one cracker. Versions below are the ones this
+You need findcrypto plus one cracker. Versions below are the ones this
 runbook is verified with (§Verified with); newer ones usually work,
 older ones may lack the formats.
 
-- findbtc: build from this repo (see the README), or grab a release
-  binary. All `findbtc` commands below assume it is on your PATH.
+- findcrypto: build from this repo (see the README), or grab a release
+  binary. All `findcrypto` commands below assume it is on your PATH.
 
-      go build -o findbtc .
+      go build -o findcrypto .
 
 - hashcat with a CPU backend for the small runs here (pocl). The
   verified version is 6.2.6:
@@ -37,9 +37,10 @@ older ones may lack the formats.
   build without the Bitcoin/Ethereum formats). Build the verified
   release from the Openwall tarball with the repo's GCC fix:
 
-      curl -sL -o john.tar.gz https://www.openwall.com/john/k/john-1.9.0-jumbo-1.tar.gz
+      curl --fail --show-error --location -o john.tar.gz https://www.openwall.com/john/k/john-1.9.0-jumbo-1.tar.gz
+      echo '8b40499a20fdd66d5f651b439bf9846367182bb93e8bff3fd39ba267576dd317 *john.tar.gz' | sha256sum -c -
       tar xzf john.tar.gz && cd john-1.9.0-jumbo-1
-      patch -p0 < /path/to/findbtc/scripts/john-1.9.0-jumbo-1-gcc13-blake2.patch
+      patch -p0 < /path/to/findcrypto/scripts/john-1.9.0-jumbo-1-gcc13-blake2.patch
       cd src && ./configure && make -s -j"$(nproc)"
 
   then run it from its `run/` directory (see Failure modes).
@@ -49,7 +50,7 @@ older ones may lack the formats.
   §Verified with):
 
       git clone https://github.com/3rdIteration/btcrecover && cd btcrecover
-      git checkout 1457088
+      git checkout 1457088acf17630eb12a5b53989982ac34e55f2a
       pip install "wallycore>=1.0.0" "protobuf~=5.29.6" "pycryptodome~=3.23.0" "eth-keyfile==0.6.0" "setuptools==80.9.0"
 
   (`uv run --with ...` with the same pins works too and leaves your
@@ -61,8 +62,8 @@ Scan with carving, or point `-hashes` at a carve or wallet copy (never the
 scanned device itself). One line per record, ready to feed a cracker:
 
 ```sh
-findbtc -hashes core-bdb-mkey.bin
-findbtc -hashes eth-pbkdf2.json -json
+findcrypto -hashes core-bdb-mkey.bin
+findcrypto -hashes eth-pbkdf2.json -json
 ```
 
 You get (sample output from the corpus):
@@ -96,10 +97,10 @@ Crackers want one hash per line with no filenames, one file per mode
 human-readable output:
 
 ```sh
-findbtc -hashes core-bdb-mkey.bin | grep '^\$' > hashes-bitcoin.txt
-findbtc -hashes core-sqlite-mkey.bin | grep '^\$' >> hashes-bitcoin.txt
-findbtc -hashes eth-pbkdf2.json | grep '^\$' > hashes-eth-pbkdf2.txt
-findbtc -hashes eth-scrypt.json | grep '^\$' > hashes-eth-scrypt.txt
+findcrypto -hashes core-bdb-mkey.bin | grep '^\$' > hashes-bitcoin.txt
+findcrypto -hashes core-sqlite-mkey.bin | grep '^\$' >> hashes-bitcoin.txt
+findcrypto -hashes eth-pbkdf2.json | grep '^\$' > hashes-eth-pbkdf2.txt
+findcrypto -hashes eth-scrypt.json | grep '^\$' > hashes-eth-scrypt.txt
 ```
 
 ## 2. Build a tokenlist from hit context
@@ -112,7 +113,7 @@ line per distinct word, case mutations space-separated on the same line
 never combined with itself):
 
 ```sh
-findbtc -tokenlist wallet-context.bin -tokenlist-out tokens.txt
+findcrypto -tokenlist wallet-context.bin -tokenlist-out tokens.txt
 ```
 
 On the corpus that prints `Wrote 11 token lines (11 base words) to
@@ -120,7 +121,7 @@ tokens.txt`, and `tokens.txt` holds one line per nearby word with its
 case mutations (excerpt):
 
 ```text
-# findbtc tokenlist: 11 base words, one line each.
+# findcrypto tokenlist: 11 base words, one line each.
 river RIVER River
 stone STONE Stone
 2019
@@ -232,8 +233,8 @@ step 1.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| findbtc: `No crack material found` | no exportable record: nothing wallet-shaped, OR a skipped keystore (see stderr: unsupported cipher/KDF, presale) | read stderr first — a skip reason means carving wider will not help; only a bare message means carve wider (`-context`) and retry |
-| findbtc: `No token words found` | context holds no 3+ letter/digit runs | feed a bigger carve, or the `hits.jsonl` with carves |
+| findcrypto: `No crack material found` | no exportable record: nothing wallet-shaped, OR a skipped keystore (see stderr: unsupported cipher/KDF, presale) | read stderr first — a skip reason means carving wider will not help; only a bare message means carve wider (`-context`) and retry |
+| findcrypto: `No token words found` | context holds no 3+ letter/digit runs | feed a bigger carve, or the `hits.jsonl` with carves |
 | hashcat: `Token length exception`, `No hashes loaded` | mixed modes in one file, or a `name:` filename prefix (ethereum2john.py prepends one) | one file per `-m`; strip prefixes (`grep '^\$'` output never has them) |
 | hashcat: `All hashes found as potfile entries` on a re-run in the same directory | the hashes were already cracked into the run-local `hashcat.pot` | not an error — `--show` still prints them; delete only that run-local file to re-time from scratch (never another recovery's pot) |
 | John: `No password hashes left to crack` on a re-run in the same directory | the hashes were already cracked into the run-local `john.pot` (`--pot` selects the potfile; `--session` only names the session) | not an error — `--show` still prints them; delete only that run-local file to re-time from scratch (never another recovery's pot) |
@@ -288,11 +289,12 @@ Every `sh` command above ran green on 2026-09-20 — locally via
   struct-padding fix for GCC ≥ 13 that changes no hashes; full
   banner suffix varies by CPU)
 - hashcat v6.2.6 (pocl CPU backend)
-- btcrecover 1.13.0-Cryptoguide @ 1457088 (2026-07-17) on Python 3.12
+- btcrecover 1.13.0-Cryptoguide @ 1457088acf17630eb12a5b53989982ac34e55f2a
+  (2026-07-17) on Python 3.12
   with eth-keyfile 0.6.0, setuptools 80.9.0 (eth-keyfile still
   imports pkg_resources, removed from setuptools ≥ 81), and the
   wallycore secp256k1 backend
-- findbtc built from this repo at the same commit
+- findcrypto built from this repo at the same commit
 
 `scripts/password-handoff.sh` re-checks the pinned stamps on every
 run: the four tool versions above plus the eth-keyfile and setuptools

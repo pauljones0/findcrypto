@@ -179,7 +179,7 @@ func TestVerifyCaseLogSkipped(t *testing.T) {
 	kept = append(kept, payload[:5000]...)
 	kept = append(kept, payload[9000:]...)
 	rec := CaseLog{
-		Tool:   "findbtc",
+		Tool:   "findcrypto",
 		Status: "complete",
 		Source: CaseSource{Path: rawPath, Kind: "raw", Size: int64(len(payload))},
 		Hash: CaseHash{SHA256: hexSHA256(kept), MD5: hexMD5(kept),
@@ -200,7 +200,7 @@ func TestVerifyCaseLogSkipped(t *testing.T) {
 func TestVerifyCaseLogMissingSource(t *testing.T) {
 	dir := t.TempDir()
 	rec := CaseLog{
-		Tool:   "findbtc",
+		Tool:   "findcrypto",
 		Status: "complete",
 		Source: CaseSource{Path: filepath.Join(dir, "gone.bin"), Kind: "raw", Size: 10},
 	}

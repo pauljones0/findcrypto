@@ -53,9 +53,10 @@ type PartialSeed struct {
 
 // Completion is one checksum-valid completion, most-likely first.
 type Completion struct {
-	Words []string // full restored phrase
-	Fill  []string // gap fills aligned with PartialSeed.Gaps
-	Score int      // summed capped edit distance (lower = more likely)
+	Words     []string // full restored phrase
+	Fill      []string // replacement words
+	Positions []int    // replaced positions aligned with Fill
+	Score     int      // edit-distance score (lower = more likely)
 }
 
 // Correction is a "did you mean" suggestion for one typo-like gap.
@@ -75,12 +76,13 @@ type SeedCompletion struct {
 }
 
 // CompleteSeed enumerates the checksum-valid completions of a partial
-// phrase, most-likely first: candidates within typo range (edit
-// distance <= 2, the scanner's bound) sort by distance, then wordlist
-// order; beyond typo range every candidate ties and enumerates in
-// wordlist order. Shown caps at maxResults (<=0 means
-// CompleteDefaultMax, above CompleteHardMax clamps); Total is always
-// the exact count. Three or more gaps refuse with ErrTooManyMissing.
+// phrase, most-likely first. Unknown-token gaps use the scanner's capped
+// typo-distance ordering. When every token is a BIP39 word but the checksum
+// fails, the bounded recovery path substitutes exactly one word and orders
+// candidates by exact edit distance, position, then wordlist order. Shown
+// caps at maxResults (<=0 means CompleteDefaultMax, above CompleteHardMax
+// clamps); Total is always the exact count. Three or more gaps refuse with
+// ErrTooManyMissing.
 func CompleteSeed(words []string, maxResults int) (*SeedCompletion, error) {
 	p, err := parsePartialSeed(words)
 	if err != nil {
@@ -96,7 +98,7 @@ func CompleteSeed(words []string, maxResults int) (*SeedCompletion, error) {
 		maxResults = CompleteHardMax
 	}
 	if len(p.Gaps) == 0 {
-		return completeExact(p)
+		return completeKnownWords(p, maxResults)
 	}
 	base := make([]uint16, p.Length)
 	for i, w := range p.Words {
@@ -168,21 +170,95 @@ func tooManyMissingError(p PartialSeed) error {
 		"see docs/WHAT_NEXT.md", ErrTooManyMissing, len(p.Gaps), p.Length, tries)
 }
 
-// completeExact answers a gap-free phrase: the phrase itself when it
-// validates, else an error (never a silent wrong answer).
-func completeExact(p PartialSeed) (*SeedCompletion, error) {
+// completeKnownWords answers a gap-free phrase. A checksum-valid phrase is
+// returned byte-for-byte as before. A checksum-invalid phrase has no missing
+// word, so try the only bounded repair with useful recall: substitute exactly
+// one dictionary word at each position.
+func completeKnownWords(p PartialSeed, maxResults int) (*SeedCompletion, error) {
 	indices := make([]uint16, p.Length)
 	for i, w := range p.Words {
 		indices[i] = bip39WordIndex[strings.ToLower(w)]
 	}
 	if !bip39ChecksumValid(indices) {
-		return nil, errors.New("phrase is complete but the checksum fails — a word is wrong, not missing (try -complete on the near-miss hit, or BTCRecover for reorder/typo search)")
+		return completeOneSubstitution(p, indices, maxResults), nil
 	}
 	return &SeedCompletion{
 		Partial: p,
 		Shown:   []Completion{{Words: append([]string(nil), p.Words...)}},
 		Total:   1,
 	}, nil
+}
+
+// substitutionTrial records one checksum-valid, one-word correction without
+// carrying a full phrase through the sort. position and word are the stable
+// tie-breakers after exact edit distance.
+type substitutionTrial struct {
+	score    int
+	position int
+	word     uint16
+}
+
+// completeOneSubstitution enumerates every phrase that differs at exactly one
+// position. The unchanged token is explicitly excluded; the input is known to
+// fail its checksum, but keeping the exclusion structural prevents this helper
+// from ever turning into an accidental self-completion path.
+func completeOneSubstitution(p PartialSeed, base []uint16, max int) *SeedCompletion {
+	indices := append([]uint16(nil), base...)
+	trials := make([]substitutionTrial, 0, len(base)*len(bip39Words)/16)
+	for position, original := range base {
+		for word := range bip39Words {
+			candidate := uint16(word)
+			if candidate == original {
+				continue
+			}
+			indices[position] = candidate
+			if !bip39ChecksumValid(indices) {
+				continue
+			}
+			trials = append(trials, substitutionTrial{
+				score:    exactWordDistance(bip39Words[original], bip39Words[candidate]),
+				position: position,
+				word:     candidate,
+			})
+		}
+		indices[position] = original
+	}
+	sort.Slice(trials, func(i, j int) bool {
+		if trials[i].score != trials[j].score {
+			return trials[i].score < trials[j].score
+		}
+		if trials[i].position != trials[j].position {
+			return trials[i].position < trials[j].position
+		}
+		return trials[i].word < trials[j].word
+	})
+
+	res := &SeedCompletion{Partial: p, Total: len(trials)}
+	if len(trials) > max {
+		trials = trials[:max]
+		res.Truncated = true
+	}
+	for _, trial := range trials {
+		phrase := make([]string, len(base))
+		for i, idx := range base {
+			phrase[i] = bip39Words[idx]
+		}
+		phrase[trial.position] = bip39Words[trial.word]
+		res.Shown = append(res.Shown, Completion{
+			Words:     phrase,
+			Fill:      []string{bip39Words[trial.word]},
+			Positions: []int{trial.position},
+			Score:     trial.score,
+		})
+	}
+	return res
+}
+
+// exactWordDistance asks the bounded implementation for the exact distance.
+// BIP39 words are at most eight ASCII bytes, so a bound equal to the longer
+// word cannot trigger its early-out path.
+func exactWordDistance(a, b string) int {
+	return levenshteinBounded(a, b, max(len(a), len(b)))
 }
 
 // cappedDistance is the typo distance capped at 3 (past the scanner's
@@ -212,9 +288,10 @@ func completeOneGap(res *SeedCompletion, base []uint16, gap int, order []uint16,
 			phrase[i] = bip39Words[idx]
 		}
 		res.Shown = append(res.Shown, Completion{
-			Words: phrase,
-			Fill:  []string{bip39Words[c]},
-			Score: dist[c],
+			Words:     phrase,
+			Fill:      []string{bip39Words[c]},
+			Positions: []int{gap},
+			Score:     dist[c],
 		})
 	}
 	res.Truncated = res.Total > len(res.Shown)
@@ -261,9 +338,10 @@ func completeTwoGaps(res *SeedCompletion, base []uint16, gaps []int, orders [][]
 			phrase[i] = bip39Words[idx]
 		}
 		res.Shown = append(res.Shown, Completion{
-			Words: phrase,
-			Fill:  []string{bip39Words[t.i], bip39Words[t.j]},
-			Score: t.score,
+			Words:     phrase,
+			Fill:      []string{bip39Words[t.i], bip39Words[t.j]},
+			Positions: append([]int(nil), gaps...),
+			Score:     t.score,
 		})
 	}
 }
@@ -322,7 +400,7 @@ var seedAccountPaths = []struct {
 // SeedToAccounts derives the watch-only handoff keys for a complete
 // checksum-valid mnemonic: BIP39 seed (empty passphrase) → BIP32 master
 // → m/purpose'/0'/0' hardened, neutered to account keys. The output
-// feeds `findbtc -watch` with no copy-paste. Invalid phrases refuse;
+// feeds `findcrypto -watch` with no copy-paste. Invalid phrases refuse;
 // private material is zeroized before return and never logged.
 func SeedToAccounts(mnemonic []string) (*SeedAccounts, error) {
 	sentence, err := seedSentence(mnemonic)

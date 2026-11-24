@@ -1,86 +1,138 @@
 version: 2
 
-project_name: findbtc
+project_name: findcrypto
 
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
+
+# findcrypto is the primary command. The findbtc builds are intentionally kept
+# for one compatibility cycle so existing scripts and package-manager channels
+# do not break when the repository moves from findbtc_sandbox to findcrypto.
 builds:
-  # Split by OS so the nFPM packages below wrap only Linux binaries.
-  # Archive names are unchanged (name_template uses .Os/.Arch).
-  - id: findbtc
+  - id: findcrypto
     main: .
-    binary: findbtc
-    goos:
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
+    binary: findcrypto
+    goos: [darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
     ldflags:
       - -s -w -X main.version={{ .Version }}
-    env:
-      - CGO_ENABLED=0
-  - id: findbtc-linux
+    env: [CGO_ENABLED=0]
+  - id: findcrypto-linux
     main: .
-    binary: findbtc
-    goos:
-      - linux
-    goarch:
-      - amd64
-      - arm64
+    binary: findcrypto
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
     ldflags:
       - -s -w -X main.version={{ .Version }}
-    env:
-      # Static binaries: archives run anywhere and the scratch-based
-      # container image has no dynamic loader. The module is pure Go
-      # (stdlib + x/sys), so nothing needs cgo.
-      - CGO_ENABLED=0
+    env: [CGO_ENABLED=0]
+  - id: findbtc-compat
+    main: .
+    binary: findbtc
+    goos: [darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    env: [CGO_ENABLED=0]
+  - id: findbtc-compat-linux
+    main: .
+    binary: findbtc
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    env: [CGO_ENABLED=0]
 
 archives:
-  - id: default
+  - id: findcrypto
+    ids: [findcrypto, findcrypto-linux]
     formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
-    name_template: 'findbtc_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-    files:
-      - LICENSE
-      - README.md
+    name_template: "findcrypto_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md, CHANGELOG.md]
+  - id: findbtc-compat
+    ids: [findbtc-compat, findbtc-compat-linux]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "findbtc_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [LICENSE, README.md, CHANGELOG.md]
 
 checksum:
   name_template: checksums.txt
 
-# SPDX SBOM per archive, generated with syft (installed by release.yml).
+# SPDX SBOM per archive, generated with syft in release.yml.
 sboms:
   - artifacts: archive
 
-# Managed install path for labs: deb + rpm per Linux arch, built by the
-# bundled nFPM (no rpmbuild/dpkg needed). Binary lands in /usr/bin.
+# The primary Linux package installs both command names. New documentation and
+# completion assets live under findcrypto; findbtc is only a binary alias.
 nfpms:
-  - id: findbtc
-    package_name: findbtc
-    ids:
-      - findbtc-linux
-    formats:
-      - deb
-      - rpm
+  - id: findcrypto
+    package_name: findcrypto
+    ids: [findcrypto-linux, findbtc-compat-linux]
+    formats: [deb, rpm]
+    provides: [findbtc]
+    conflicts: [findbtc]
+    replaces: [findbtc]
     maintainer: Paul Jones <32859666+pauljones0@users.noreply.github.com>
-    description: Find BTC wallets by scanning raw block devices
-    homepage: https://github.com/pauljones0/findbtc
+    description: Recover cryptocurrency wallet traces from devices and forensic images
+    homepage: https://github.com/pauljones0/findcrypto
+    license: GPL-3.0-or-later
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/findcrypto/LICENSE
+      - src: README.md
+        dst: /usr/share/doc/findcrypto/README.md
+      - src: CHANGELOG.md
+        dst: /usr/share/doc/findcrypto/CHANGELOG.md
+      - src: docs/BENCHMARKS.md
+        dst: /usr/share/doc/findcrypto/BENCHMARKS.md
+      - src: docs/PIPELINE_INGEST.md
+        dst: /usr/share/doc/findcrypto/PIPELINE_INGEST.md
+      - src: docs/RESOURCE_BOUNDS.md
+        dst: /usr/share/doc/findcrypto/RESOURCE_BOUNDS.md
+      - src: packaging/completion/findcrypto.bash
+        dst: /usr/share/bash-completion/completions/findcrypto
+      - src: packaging/completion/_findcrypto
+        dst: /usr/share/zsh/vendor-completions/_findcrypto
+      - src: packaging/completion/_findcrypto
+        dst: /usr/share/zsh/site-functions/_findcrypto
+      - src: packaging/completion/findcrypto.fish
+        dst: /usr/share/fish/vendor_completions.d/findcrypto.fish
+      - src: packaging/man/findcrypto.1
+        dst: /usr/share/man/man1/findcrypto.1
+
+  # Preserve the v0.2 package name and payload layout for automation that still
+  # consumes findbtc artifacts. It contains the compatibility command only.
+  - id: findbtc-compat
+    package_name: findbtc
+    ids: [findbtc-compat-linux]
+    formats: [deb, rpm]
+    conflicts: [findcrypto]
+    maintainer: Paul Jones <32859666+pauljones0@users.noreply.github.com>
+    description: Compatibility command for the renamed findcrypto scanner
+    homepage: https://github.com/pauljones0/findcrypto
     license: GPL-3.0-or-later
     contents:
       - src: LICENSE
         dst: /usr/share/doc/findbtc/LICENSE
       - src: README.md
         dst: /usr/share/doc/findbtc/README.md
-      # Orphan guides linked from the man page's SEE ALSO (Goal 39).
+      - src: CHANGELOG.md
+        dst: /usr/share/doc/findbtc/CHANGELOG.md
       - src: docs/BENCHMARKS.md
         dst: /usr/share/doc/findbtc/BENCHMARKS.md
       - src: docs/PIPELINE_INGEST.md
         dst: /usr/share/doc/findbtc/PIPELINE_INGEST.md
       - src: docs/RESOURCE_BOUNDS.md
         dst: /usr/share/doc/findbtc/RESOURCE_BOUNDS.md
-      # Generated shell completions + man page (Goal 39). The zsh
-      # script ships in both dirs: vendor-completions is the Debian
-      # path, site-functions the rpm one.
       - src: packaging/completion/findbtc.bash
         dst: /usr/share/bash-completion/completions/findbtc
       - src: packaging/completion/_findbtc
@@ -92,73 +144,53 @@ nfpms:
       - src: packaging/man/findbtc.1
         dst: /usr/share/man/man1/findbtc.1
 
-# Blessed container image: scratch + the exact release binaries for
-# linux/amd64 and linux/arm64, pushed to GHCR on tag. Snapshot builds
-# produce per-platform local images (tag-arch suffix) instead of a
-# pushed manifest; see docs/CONTAINER.md.
+# The scratch image contains findcrypto plus the findbtc compatibility command,
+# built from the same commit and static toolchain.
 dockers_v2:
-  - ids:
-      - findbtc-linux
-    images:
-      - ghcr.io/pauljones0/findbtc
-    tags:
-      - "{{.Version}}"
-      - latest
-    extra_files:
-      - LICENSE
-      - README.md
+  - ids: [findcrypto-linux, findbtc-compat-linux]
+    images: [ghcr.io/pauljones0/findcrypto]
+    tags: ["{{ .Version }}", latest]
+    extra_files: [LICENSE, README.md, CHANGELOG.md]
     labels:
-      org.opencontainers.image.title: findbtc
-      org.opencontainers.image.description: Find BTC wallets by scanning raw block devices
-      org.opencontainers.image.source: https://github.com/pauljones0/findbtc
+      org.opencontainers.image.title: findcrypto
+      org.opencontainers.image.description: Recover cryptocurrency wallet traces from devices and forensic images
+      org.opencontainers.image.source: https://github.com/pauljones0/findcrypto
       org.opencontainers.image.licenses: GPL-3.0-or-later
     annotations:
-      org.opencontainers.image.revision: "{{.FullCommit}}"
-      org.opencontainers.image.version: "{{.Version}}"
-      org.opencontainers.image.created: "{{.Date}}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .Date }}"
 
-# Homebrew cask with a `binary` stanza (GoReleaser's blessed path for
-# precompiled CLI tools; the binary-formula pipe is deprecated since
-# v2.10). `brew install pauljones0/findbtc/findbtc` resolves the cask
-# (proven by the macos install smoke in CI).
-# skip_upload stays true until a TAP_GITHUB_TOKEN secret exists: the
-# default GITHUB_TOKEN cannot push cross-repo, so tap automation
-# needs a classic PAT with repo scope on homebrew-findbtc (see
-# docs/RELEASE.md "Tap automation"). Until then the tap updates by
-# hand from the packaging/homebrew bootstrap on each release.
+# Existing public channels remain named findbtc until their maintainers migrate
+# them. They consume the compatibility archive, so a findcrypto release can
+# update them without breaking current installs.
 homebrew_casks:
   - name: findbtc
+    ids: [findbtc-compat]
     repository:
       owner: pauljones0
       name: homebrew-findbtc
-    homepage: https://github.com/pauljones0/findbtc
-    description: Find BTC wallets by scanning raw block devices
+    homepage: https://github.com/pauljones0/findcrypto
+    description: Compatibility command for the renamed findcrypto scanner
     license: GPL-3.0-or-later
     skip_upload: true
-    binaries:
-      - findbtc
+    binaries: [findbtc]
 
-# No scoops block: the Scoop bucket self-updates via the manifest's
-# checkver/autoupdate plus its own scheduled checkver workflow (same
-# repo, no extra token). See the bucket README.
-
-# Winget manifests render into dist/ for review on every release but
-# never auto-submit: microsoft/winget-pkgs PRs stay a manual,
-# separately-authorized step (Goal 37). Install from the staged
-# manifests today with `winget install --manifest <dir>`.
 winget:
-  - package_identifier: pauljones0.findbtc
+  - name: findbtc
+    ids: [findbtc-compat]
+    package_identifier: pauljones0.findbtc
     publisher: Paul Jones
     publisher_url: https://github.com/pauljones0
-    homepage: https://github.com/pauljones0/findbtc
-    short_description: Find BTC wallets by scanning raw block devices
-    description: findbtc scans raw block devices and forensic images for cryptocurrency wallet traces.
+    homepage: https://github.com/pauljones0/findcrypto
+    short_description: Compatibility command for the renamed findcrypto scanner
+    description: findcrypto scans raw block devices and forensic images for cryptocurrency wallet traces; findbtc is its compatibility command.
     license: GPL-3.0-or-later
-    license_url: https://github.com/pauljones0/findbtc/blob/master/LICENSE
+    license_url: https://github.com/pauljones0/findcrypto/blob/main/LICENSE
     repository:
       owner: microsoft
       name: winget-pkgs
     skip_upload: true
 
 snapshot:
-  version_template: '{{ .Tag }}-SNAPSHOT-{{ .ShortCommit }}'
+  version_template: "{{ .Tag }}-SNAPSHOT-{{ .ShortCommit }}"

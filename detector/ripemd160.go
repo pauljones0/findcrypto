@@ -2,7 +2,7 @@ package detector
 
 import "math/bits"
 
-// RIPEMD-160, one-shot. findbtc needs it only for HASH160 (Bitcoin address
+// RIPEMD-160, one-shot. findcrypto needs it only for HASH160 (Bitcoin address
 // derivation); a small local implementation keeps the module dependency-free.
 //
 // Algorithm: Dobbertin/Bosselaers/Preneel, "RIPEMD-160" (AB-9601). Verified

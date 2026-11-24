@@ -10,12 +10,12 @@ scans can skip everything still allocated.
 
 List and scan deleted entries (names on every hit):
 
-    findbtc -fs /path/to/image.bin [-json] [-extract-dir DIR]
-    findbtc -fs /dev/sdb1 -fs-offset 1048576   # volume starts mid-file
+    findcrypto -fs /path/to/image.bin [-json] [-extract-dir DIR]
+    findcrypto -fs /dev/sdb1 -fs-offset 1048576   # volume starts mid-file
 
 Scan only free space (deleted content, no filenames):
 
-    findbtc -unallocated-only /dev/sdb1 [-json]
+    findcrypto -unallocated-only /dev/sdb1 [-json]
 
 `-fs-offset` pins one volume boot sector by hand (concatenated
 evidences, hand-verified layouts). When it is omitted, MBR and GPT

@@ -5,8 +5,8 @@ non-wallet matchers for secret hygiene on repos, laptops, and images —
 same pipeline (blocks → matchers → carves), same FP bar, same
 carve/DFXML/report machinery:
 
-    findbtc -profile=secrets -walk ~/src > secrets.jsonl
-    findbtc -report secrets.jsonl
+    findcrypto -profile=secrets -walk ~/src > secrets.jsonl
+    findcrypto -report secrets.jsonl
 
 The profile applies to every scan mode (`-walk`, `-fs`,
 `-unallocated-only`, raw). The default profile is byte-identical in
@@ -45,7 +45,7 @@ in `samples/`:
 
 - Pre-commit hook: `cp samples/pre-commit .git/hooks/pre-commit`.
   Fails the commit on secrets; override the binary with
-  `FINDBTC=/path/to/findbtc`. It sweeps the whole worktree, so for
+  `FINDBTC=/path/to/findcrypto`. It sweeps the whole worktree, so for
   large repos prefer the CI gate below.
 - GitHub workflow: copy `samples/secrets-gate.yml` to
   `.github/workflows/`. It runs the same sweep from the blessed
@@ -60,9 +60,9 @@ Accepted findings (reviewed false alarms, fixture secrets) would
 otherwise fail every future gate. Record them once, then suppress by
 fingerprint:
 
-    findbtc -walk ~/src -profile=secrets -json > sweep.jsonl
+    findcrypto -walk ~/src -profile=secrets -json > sweep.jsonl
     # review sweep.jsonl, then keep the accepted hits as the baseline:
-    findbtc -walk ~/src -profile=secrets -fail-on-hit -baseline sweep.jsonl
+    findcrypto -walk ~/src -profile=secrets -fail-on-hit -baseline sweep.jsonl
 
 Add the same `-baseline known.jsonl` to the pre-commit hook and the
 CI workflow so local and remote gates agree. The sweep reports
@@ -89,20 +89,20 @@ actual leak shape. Pipe history through stdin scanning with
 `-patch` and each hit attributes to its commit + repo path (+
 new-file line for added/context lines):
 
-    git log -p --no-color --no-ext-diff --no-textconv | findbtc -profile=secrets -patch -json - > history.jsonl
+    git log -p --no-color --no-ext-diff --no-textconv | findcrypto -profile=secrets -patch -json - > history.jsonl
 
 Always pass `--no-color --no-ext-diff --no-textconv`: color codes,
 external diff drivers, and textconv filters rewrite patch bytes,
 which moves offsets and changes fingerprint keys. Ranges are the
-shell's job (`git log -p main..HEAD | ...`); findbtc never
+shell's job (`git log -p main..HEAD | ...`); findcrypto never
 interprets revisions.
 
 The two-command history gate records accepted history once, then
 fails CI only on new leaks:
 
-    git log -p --no-color --no-ext-diff --no-textconv | findbtc -profile=secrets -patch -json - > history.jsonl
+    git log -p --no-color --no-ext-diff --no-textconv | findcrypto -profile=secrets -patch -json - > history.jsonl
     # review history.jsonl, keep the accepted hits as known.jsonl, then gate:
-    git log -p --no-color --no-ext-diff --no-textconv main..HEAD | findbtc -profile=secrets -patch -fail-on-hit -baseline known.jsonl -
+    git log -p --no-color --no-ext-diff --no-textconv main..HEAD | findcrypto -profile=secrets -patch -fail-on-hit -baseline known.jsonl -
 
 History fingerprints (`v1/history/<commit>/<path>/<needle>/<hash>`)
 key on commit + path + the patch line holding the match — never
@@ -167,7 +167,7 @@ alone does not report. This audit states exactly what that touches:
   only). Test fixtures generate fresh random keys in-memory and
   discard them.
 - **No network:** the only `net/http` uses are the opt-in
-  `-balance-endpoint` path (`-watch` balances, with its own loud
+  `-balance-endpoint` path (`-watch` address activity, with its own loud
   warning). The secrets matchers cannot dial out.
 
 OpenSSH and PGP blocks stay header-only (their bodies are not DER)
@@ -180,7 +180,7 @@ means anyone checked the key against a live service.
 - Private-key derivation is never attempted.
 - Found secrets are never verified online (no AWS/GitHub API calls).
 - The secrets profile never changes default-profile detections.
-- Native `git rev-list` walking is not built: the `git log -p | findbtc
+- Native `git rev-list` walking is not built: the `git log -p | findcrypto
   -patch -` pipe covers history scanning with no git dependency, so a
   native walker waits on demonstrated demand (demand check, Goal 36:
   none recorded — ask if the pipe cannot express your range).

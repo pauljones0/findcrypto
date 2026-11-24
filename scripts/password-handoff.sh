@@ -23,16 +23,24 @@
 # Usage:
 #   password-handoff.sh REPO WORKPARENT
 # Env:
-#   FINDBTC   findbtc binary (default: findbtc on PATH)
-#   JOHN      john binary (default: john on PATH)
-#   HASHCAT   hashcat binary (default: hashcat on PATH)
-#   BTCR_DIR  BTCRecover checkout dir (required; btcrecover.py + package)
-#   PYTHON    python interpreter (default: python3)
+#   FINDCRYPTO  findcrypto binary (default: findcrypto, then findbtc)
+#   FINDBTC     legacy fallback when FINDCRYPTO is unset
+#   JOHN        john binary (default: john on PATH)
+#   HASHCAT     hashcat binary (default: hashcat on PATH)
+#   BTCR_DIR    BTCRecover checkout dir (required; btcrecover.py + package)
+#   PYTHON      python interpreter (default: python3)
 set -euo pipefail
 
 REPO=${1:?usage: password-handoff.sh REPO WORKPARENT}
 WORKPARENT=${2:?usage: password-handoff.sh REPO WORKPARENT}
-FINDBTC=${FINDBTC:-findbtc}
+FINDCRYPTO=${FINDCRYPTO:-${FINDBTC:-}}
+if [ -z "$FINDCRYPTO" ]; then
+	if command -v findcrypto >/dev/null 2>&1; then
+		FINDCRYPTO=findcrypto
+	else
+		FINDCRYPTO=findbtc
+	fi
+fi
 JOHN=${JOHN:-john}
 HASHCAT=${HASHCAT:-hashcat}
 BTCR_DIR=${BTCR_DIR:?set BTCR_DIR to a BTCRecover checkout}
@@ -45,6 +53,16 @@ case "$PYTHON" in
 */*) ;;
 *) PYTHON=$(command -v "$PYTHON") || { echo "python interpreter not found: $PYTHON" >&2; exit 1; } ;;
 esac
+case "$FINDCRYPTO" in
+*/*)
+	FINDCRYPTO_DIR=$(cd "$(dirname "$FINDCRYPTO")" && pwd -P) || exit 1
+	FINDCRYPTO=$FINDCRYPTO_DIR/$(basename "$FINDCRYPTO") ;;
+*) FINDCRYPTO=$(command -v "$FINDCRYPTO") || { echo "findcrypto/findbtc binary not found" >&2; exit 1; } ;;
+esac
+if [ ! -x "$FINDCRYPTO" ]; then
+	echo "findcrypto/findbtc binary is not executable: $FINDCRYPTO" >&2
+	exit 1
+fi
 DOC=$REPO/docs/PASSWORD_RECOVERY.md
 
 # Never rm -rf a caller-supplied path: an accidental WORK value (a
@@ -63,7 +81,7 @@ export PATH=$WORK:$PATH
 # Tools run under their doc names. When the binary already has that name
 # its directory goes on PATH untouched; only a differently-named binary
 # (e.g. a -o fbt build) gets a workdir symlink, which is safe for the
-# tools that need it (findbtc has no exe-relative files). John's
+# tools that need it (findcrypto has no exe-relative files). John's
 # CWD-relative run files are staged separately below.
 # Pin uv's interpreter selection to the ambient python3 while the
 # workdir is still empty: when $PYTHON is a uv wrapper it gets symlinked
@@ -90,7 +108,10 @@ link_tool() {
 		ln -s "$p" "./$2"
 	fi
 }
-link_tool "$FINDBTC" findbtc
+link_tool "$FINDCRYPTO" findcrypto
+link_tool "$FINDCRYPTO" findbtc
+findcrypto -version >/dev/null
+findbtc -version >/dev/null
 link_tool "$HASHCAT" hashcat
 # The doc invokes bare `python3`: when $PYTHON is a wrapper (local uv) or
 # a versioned interpreter, it takes that name in the workdir. (Plain

@@ -1,59 +1,42 @@
 # Blessed container image
 
-Labs that standardize on pinned container images should use
-`ghcr.io/pauljones0/findbtc`, published by the tag release workflow.
-Pull it digest-pinned and scan a mounted evidence file:
+Beginning with the first `findcrypto` tag, the release workflow publishes
+`ghcr.io/pauljones0/findcrypto`. Pull a versioned, digest-pinned image and mount
+evidence read-only:
 
-    docker pull ghcr.io/pauljones0/findbtc:X.Y.Z
-    docker pull ghcr.io/pauljones0/findbtc@sha256:<digest from the release notes>
+    docker pull ghcr.io/pauljones0/findcrypto:X.Y.Z
+    docker pull ghcr.io/pauljones0/findcrypto@sha256:<digest>
     docker run --rm -v ./evidence:/evidence:ro \
-      ghcr.io/pauljones0/findbtc@sha256:<digest> /evidence/disk.img
+      ghcr.io/pauljones0/findcrypto@sha256:<digest> /evidence/disk.img
 
-Tags per release: the version without the `v` prefix (`X.Y.Z`, e.g.
-`0.2.0`, matching the archive names) and `latest`. Pin the digest
-for casework — `latest` moves.
+Tags are the version without the `v` prefix and `latest`; pin the digest for
+casework because `latest` moves. The pre-rename `v0.2.0` image remains under the
+historical `ghcr.io/pauljones0/findbtc` package.
 
 ## Image facts
 
-- Base: `scratch` + the exact release binaries (no shell, no package
-  manager). amd64 image is ~10 MB on disk.
-- Platforms: `linux/amd64`, `linux/arm64` (one manifest).
-- User: `65534:65534` (non-root). Entrypoint: `findbtc`, so image
-  arguments are findbtc arguments (`-version`, `-json`, `-profile`,
-  ...).
-- Ships `LICENSE` and `README.md` under `/usr/share/doc/findbtc`.
+- Base: `scratch`; it has no shell or package manager.
+- Platforms: `linux/amd64` and `linux/arm64` in one manifest.
+- Commands: `/usr/bin/findcrypto` plus `/usr/bin/findbtc` compatibility.
+- Entrypoint: `findcrypto`.
+- User: `65534:65534` (non-root).
+- Documentation: `LICENSE`, `README.md`, and `CHANGELOG.md` under
+  `/usr/share/doc/findcrypto`.
 
-Raw-device scans need the device plus privileges (drop back to root
-for the device nodes):
+Raw-device scans need the device nodes and root inside the container:
 
     docker run --rm --privileged --user 0 \
-      -v /dev:/dev:ro ghcr.io/pauljones0/findbtc:X.Y.Z /dev/sda
+      -v /dev:/dev:ro ghcr.io/pauljones0/findcrypto:X.Y.Z /dev/sda
 
-Prefer carving and case logs onto a mounted volume, never onto the
+Prefer carving and case logs onto a separate writable mount, never onto the
 evidence mount.
 
 ## Provenance
 
-The image wraps the release binaries byte-for-byte (same files as the
-tarballs, covered by `checksums.txt` and the SLSA provenance
-attestation — see [RELEASE.md](RELEASE.md)). A digest pin therefore
-binds the image to one attested build. The image itself carries no
-separate attestation.
+GoReleaser builds the static binaries once and copies those exact files into
+both archives/packages and the scratch image; the Dockerfile never recompiles.
+Verify the release archives and provenance as described in
+[RELEASE.md](RELEASE.md), then bind deployments to the registry digest.
 
-## Evaluation record (Goal 21)
-
-Chosen: GoReleaser `dockers_v2` (the supported path; the v1 Docker
-pipe is deprecated). One pipeline builds archives, packages, and the
-image from the same binaries, and multi-arch packaging needs no
-emulation (scratch + `COPY` only), so both release arches ship with
-no extra cost. Rejected: a standalone Dockerfile + registry workflow
-— a second Go build path whose binaries would differ from (and lack
-the provenance of) the release binaries.
-
-Verified locally (snapshot build): per-arch images build, `-version`
-and a volume-mount fixture scan pass from the amd64 image, and a
-digest-pinned pull + mount-scan passes against a local registry.
-GHCR publishing itself runs on the next tag via `release.yml`
-(buildx + registry login already wired). Multi-arch beyond
-amd64/arm64 was not justified: those are the arches the releases
-ship. No Helm chart (non-goal).
+This keeps the original Goal 21 design: one multi-architecture pipeline, no
+emulation, no second build path, and no Helm chart for a local forensic CLI.

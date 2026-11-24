@@ -2,19 +2,22 @@ package detector
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // Oracle fixtures: account keys derived by btcsuite (hdkeychain) from the
 // BIP39 test mnemonic "abandon ... about" (/tmp/xpub-oracle, kept out of the
-// repo so findbtc stays dependency-free). SLIP132 ypub/zpub/upub/vpub forms
+// repo so findcrypto stays dependency-free). SLIP132 ypub/zpub/upub/vpub forms
 // re-encode the same keys; addresses below are btcsuite's for both forms.
 
 // bip44MainXPub is m/44'/0'/0' (P2PKH).
@@ -302,6 +305,41 @@ func TestCollectWatchAddrsShape(t *testing.T) {
 	}
 }
 
+func TestCollectWatchChainSkipsInvalidChildrenWithoutShortening(t *testing.T) {
+	acct := mustParseXPub(t, bip44MainXPub)
+	chainKey, err := DeriveChild(acct, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derive := func(parent *XPub, index uint32) (*XPub, error) {
+		if index == 0 || index == 2 {
+			return nil, errInvalidChild
+		}
+		return DeriveChild(parent, index)
+	}
+	entries, err := collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 3, 0, derive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("got %d entries after invalid children, want exactly 3", len(entries))
+	}
+	want := []uint32{1, 3, 4}
+	for i, entry := range entries {
+		if entry.Index != want[i] || entry.Path != fmt.Sprintf("0/%d", want[i]) {
+			t.Errorf("entry %d = index %d path %q, want index %d", i, entry.Index, entry.Path, want[i])
+		}
+	}
+
+	// An invalid final non-hardened child must fail rather than wrap into the
+	// hardened half of the index space or loop forever.
+	_, err = collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 1, 0x7fffffff,
+		func(*XPub, uint32) (*XPub, error) { return nil, errInvalidChild })
+	if err == nil || !strings.Contains(err.Error(), "exhausted non-hardened") {
+		t.Fatalf("non-hardened boundary error = %v", err)
+	}
+}
+
 func TestWatchExportGolden(t *testing.T) {
 	entries, err := CollectWatchAddrs([]string{bip44MainXPub}, 1)
 	if err != nil {
@@ -311,9 +349,9 @@ func TestWatchExportGolden(t *testing.T) {
 	if err := WriteWatchCSV(&csvBuf, entries); err != nil {
 		t.Fatal(err)
 	}
-	wantCSV := "fingerprint,version,chain,index,path,address,script,balance_sats\n" +
-		"6cc9f252,xpub,0,0,0/0,1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA,p2pkh,\n" +
-		"6cc9f252,xpub,1,0,1/0,1J3J6EvPrv8q6AC3VCjWV45Uf3nssNMRtH,p2pkh,\n"
+	wantCSV := "fingerprint,version,chain,index,path,address,script,balance_sats,tx_count,funded_txo_sum,spent_txo_sum,used\n" +
+		"6cc9f252,xpub,0,0,0/0,1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA,p2pkh,,,,,\n" +
+		"6cc9f252,xpub,1,0,1/0,1J3J6EvPrv8q6AC3VCjWV45Uf3nssNMRtH,p2pkh,,,,,\n"
 	if csvBuf.String() != wantCSV {
 		t.Errorf("CSV mismatch:\n got:\n%s\nwant:\n%s", csvBuf.String(), wantCSV)
 	}
@@ -325,11 +363,66 @@ func TestWatchExportGolden(t *testing.T) {
 		!strings.Contains(jsonBuf.String(), `"fingerprint": "6cc9f252"`) {
 		t.Errorf("JSON missing entries:\n%s", jsonBuf.String())
 	}
+	if strings.Contains(jsonBuf.String(), `"balance_sats"`) || strings.Contains(jsonBuf.String(), `"used"`) {
+		t.Errorf("offline JSON must leave activity unknown, not zero:\n%s", jsonBuf.String())
+	}
 	// Privacy: the extended key itself appears in neither export.
 	for name, out := range map[string]string{"csv": csvBuf.String(), "json": jsonBuf.String()} {
 		if strings.Contains(out, bip44MainXPub) {
 			t.Errorf("%s export leaks the xpub", name)
 		}
+	}
+}
+
+func TestWatchExportActivityDistinguishesUnusedFromUnknown(t *testing.T) {
+	i64 := func(v int64) *int64 { return &v }
+	boolean := func(v bool) *bool { return &v }
+	entries := []WatchEntry{
+		{
+			Fingerprint: "spent", Version: "xpub", Path: "0/0", Address: "addr-spent", Script: "p2pkh",
+			BalanceSats: i64(0), TxCount: i64(3), FundedTxoSum: i64(50000),
+			SpentTxoSum: i64(50000), Used: boolean(true),
+		},
+		{
+			Fingerprint: "unused", Version: "xpub", Path: "0/1", Address: "addr-unused", Script: "p2pkh",
+			BalanceSats: i64(0), TxCount: i64(0), FundedTxoSum: i64(0),
+			SpentTxoSum: i64(0), Used: boolean(false),
+		},
+		{Fingerprint: "unknown", Version: "xpub", Path: "0/2", Address: "addr-failed", Script: "p2pkh"},
+	}
+
+	var csvBuf bytes.Buffer
+	if err := WriteWatchCSV(&csvBuf, entries); err != nil {
+		t.Fatal(err)
+	}
+	wantLines := []string{
+		"spent,xpub,0,0,0/0,addr-spent,p2pkh,0,3,50000,50000,true",
+		"unused,xpub,0,0,0/1,addr-unused,p2pkh,0,0,0,0,false",
+		"unknown,xpub,0,0,0/2,addr-failed,p2pkh,,,,,",
+	}
+	for _, want := range wantLines {
+		if !strings.Contains(csvBuf.String(), want+"\n") {
+			t.Errorf("CSV missing %q:\n%s", want, csvBuf.String())
+		}
+	}
+
+	var jsonBuf bytes.Buffer
+	if err := WriteWatchJSON(&jsonBuf, entries); err != nil {
+		t.Fatal(err)
+	}
+	jsonOut := jsonBuf.String()
+	for _, want := range []string{`"tx_count": 3`, `"funded_txo_sum": 50000`, `"spent_txo_sum": 50000`, `"used": true`, `"used": false`} {
+		if !strings.Contains(jsonOut, want) {
+			t.Errorf("JSON missing %s:\n%s", want, jsonOut)
+		}
+	}
+	unknownStart := strings.Index(jsonOut, `"fingerprint": "unknown"`)
+	if unknownStart < 0 {
+		t.Fatalf("JSON missing unknown entry:\n%s", jsonOut)
+	}
+	unknown := jsonOut[unknownStart:]
+	if strings.Contains(unknown, `"balance_sats"`) || strings.Contains(unknown, `"used"`) {
+		t.Errorf("failed lookup serialized as known activity:\n%s", unknown)
 	}
 }
 
@@ -346,44 +439,219 @@ func TestWatchFingerprintOracle(t *testing.T) {
 	}
 }
 
-// TestLookupBalances exercises the opt-in endpoint client against a local
-// Esplora-shaped stub: success, mempool inclusion, and partial failure.
-func TestLookupBalances(t *testing.T) {
+// TestLookupActivity exercises the opt-in endpoint client against a local
+// Esplora-shaped stub: confirmed+mempool aggregation, spent history at zero
+// balance, a genuinely unused address, and partial failures that stay unknown.
+func TestLookupActivity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch strings.TrimPrefix(r.URL.Path, "/address/") {
 		case "addr-funded":
-			fmt.Fprint(w, `{"chain_stats":{"funded_txo_sum":50000,"spent_txo_sum":10000},"mempool_stats":{"funded_txo_sum":2000,"spent_txo_sum":0}}`)
+			fmt.Fprint(w, `{"chain_stats":{"tx_count":2,"funded_txo_sum":50000,"spent_txo_sum":10000},"mempool_stats":{"tx_count":1,"funded_txo_sum":2000,"spent_txo_sum":0}}`)
+		case "addr-spent":
+			fmt.Fprint(w, `{"chain_stats":{"tx_count":2,"funded_txo_sum":50000,"spent_txo_sum":50000},"mempool_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0}}`)
 		case "addr-empty":
-			fmt.Fprint(w, `{"chain_stats":{"funded_txo_sum":0,"spent_txo_sum":0},"mempool_stats":{"funded_txo_sum":0,"spent_txo_sum":0}}`)
+			fmt.Fprint(w, `{"chain_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0},"mempool_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0}}`)
+		case "addr-incomplete":
+			fmt.Fprint(w, `{"chain_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0},"mempool_stats":{}}`)
+		case "addr-negative":
+			fmt.Fprint(w, `{"chain_stats":{"tx_count":-1,"funded_txo_sum":0,"spent_txo_sum":0},"mempool_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0}}`)
+		case "addr-overspent":
+			fmt.Fprint(w, `{"chain_stats":{"tx_count":1,"funded_txo_sum":1,"spent_txo_sum":2},"mempool_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0}}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
 	client := srv.Client()
-	bal, err := LookupBalances(client, srv.URL, []string{"addr-funded", "addr-empty"})
+	got, err := LookupActivity(client, srv.URL, []string{"addr-funded", "addr-spent", "addr-empty"})
 	if err != nil {
 		t.Fatalf("lookup: %s", err)
 	}
-	if bal["addr-funded"] != 42000 {
-		t.Errorf("funded balance %d, want 42000", bal["addr-funded"])
+	funded := got["addr-funded"]
+	if funded.TxCount != 3 || funded.FundedTxoSum != 52000 || funded.SpentTxoSum != 10000 || funded.BalanceSats != 42000 || !funded.Used {
+		t.Errorf("funded activity = %+v, want tx=3 funded=52000 spent=10000 balance=42000 used", funded)
 	}
-	if bal["addr-empty"] != 0 {
-		t.Errorf("empty balance %d, want 0", bal["addr-empty"])
+	spent := got["addr-spent"]
+	if spent.BalanceSats != 0 || !spent.Used || spent.TxCount != 2 {
+		t.Errorf("spent activity = %+v, want zero balance with history", spent)
 	}
-	// Partial failure: successes kept, one combined error.
-	bal, err = LookupBalances(client, srv.URL, []string{"addr-funded", "addr-missing"})
+	empty := got["addr-empty"]
+	if empty.BalanceSats != 0 || empty.Used || empty.TxCount != 0 {
+		t.Errorf("empty activity = %+v, want explicit unused zero", empty)
+	}
+
+	// Partial failures: successes stay, while HTTP, incomplete-JSON, and
+	// invalid-counter failures have no result entry (unknown, never zero).
+	got, err = LookupActivity(client, srv.URL, []string{"addr-funded", "addr-missing", "addr-incomplete", "addr-negative", "addr-overspent"})
 	if err == nil {
-		t.Fatal("missing address must produce an error")
+		t.Fatal("bad addresses must produce an error")
 	}
-	if bal["addr-funded"] != 42000 {
-		t.Errorf("partial success lost: %v", bal)
+	if got["addr-funded"].BalanceSats != 42000 {
+		t.Errorf("partial success lost: %v", got)
 	}
-	if _, err := LookupBalances(nil, srv.URL, []string{"addr-funded"}); err == nil {
+	for _, addr := range []string{"addr-missing", "addr-incomplete", "addr-negative", "addr-overspent"} {
+		if _, ok := got[addr]; ok {
+			t.Errorf("failed %s lookup became known zero: %v", addr, got[addr])
+		}
+	}
+	if !strings.Contains(err.Error(), "4 of 5 lookups failed") || !strings.Contains(err.Error(), "spent_txo_sum 2 exceeds funded_txo_sum 1") {
+		t.Errorf("combined failure count missing: %s", err)
+	}
+	if _, err := LookupActivity(nil, srv.URL, []string{"addr-funded"}); err == nil {
 		t.Error("nil client must fail")
 	}
-	if _, err := LookupBalances(client, "", []string{"addr-funded"}); err == nil {
+	if _, err := LookupActivity(client, "", []string{"addr-funded"}); err == nil {
 		t.Error("empty endpoint must fail")
+	}
+	//lint:ignore SA1012 Deliberately verify that the exported boundary rejects a nil context.
+	if _, err := LookupActivityContext(nil, client, srv.URL, []string{"addr-funded"}); err == nil {
+		t.Error("nil context must fail")
+	}
+
+	// The original balance-only API remains source-compatible for callers.
+	bal, err := LookupBalances(client, srv.URL, []string{"addr-funded", "addr-spent"})
+	if err != nil || bal["addr-funded"] != 42000 || bal["addr-spent"] != 0 {
+		t.Errorf("balance compatibility = %v, %v", bal, err)
+	}
+}
+
+const emptyEsploraActivity = `{"chain_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0},"mempool_stats":{"tx_count":0,"funded_txo_sum":0,"spent_txo_sum":0}}`
+
+func TestLookupActivityBoundedConcurrency(t *testing.T) {
+	var active, peak atomic.Int32
+	entered := make(chan struct{}, EsploraLookupConcurrency)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now := active.Add(1)
+		defer active.Add(-1)
+		for {
+			old := peak.Load()
+			if now <= old || peak.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		entered <- struct{}{}
+		select {
+		case <-release:
+			fmt.Fprint(w, emptyEsploraActivity)
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	addrs := make([]string, EsploraLookupConcurrency+7)
+	for i := range addrs {
+		addrs[i] = fmt.Sprintf("addr-%02d", i)
+	}
+	type answer struct {
+		activity map[string]AddressActivity
+		err      error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		a, err := LookupActivity(srv.Client(), srv.URL, addrs)
+		done <- answer{a, err}
+	}()
+	for i := 0; i < EsploraLookupConcurrency; i++ {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatalf("only %d requests entered; worker pool never filled", i)
+		}
+	}
+	if got := peak.Load(); got != EsploraLookupConcurrency {
+		close(release)
+		t.Fatalf("peak concurrency = %d, want %d", got, EsploraLookupConcurrency)
+	}
+	close(release)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("lookup: %v", got.err)
+		}
+		if len(got.activity) != len(addrs) {
+			t.Fatalf("got %d activities, want %d", len(got.activity), len(addrs))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bounded lookup did not finish")
+	}
+	if got := peak.Load(); got > EsploraLookupConcurrency {
+		t.Fatalf("peak concurrency grew to %d, limit %d", got, EsploraLookupConcurrency)
+	}
+}
+
+func TestLookupActivityContextCancellation(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := LookupActivityContext(ctx, srv.Client(), srv.URL,
+			[]string{"a", "b", "c", "d", "e", "f", "g", "h", "i"})
+		done <- err
+	}()
+	select {
+	case <-entered:
+		cancel()
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("lookup never reached endpoint")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled lookup did not return")
+	}
+}
+
+func TestLookupActivityDeduplicatesAndOrdersFailures(t *testing.T) {
+	var okHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/address/") {
+		case "first":
+			time.Sleep(40 * time.Millisecond)
+			http.Error(w, "no", http.StatusBadGateway)
+		case "second":
+			fmt.Fprint(w, `{bad json`)
+		case "ok":
+			okHits.Add(1)
+			fmt.Fprint(w, emptyEsploraActivity)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	got, err := LookupActivity(srv.Client(), srv.URL, []string{"first", "ok", "second", "ok"})
+	if err == nil {
+		t.Fatal("failed lookups returned no error")
+	}
+	if okHits.Load() != 1 {
+		t.Fatalf("duplicate address queried %d times, want 1", okHits.Load())
+	}
+	if a, ok := got["ok"]; !ok || a.Used {
+		t.Fatalf("successful explicit-unused result = %+v, present=%v", a, ok)
+	}
+	if len(got) != 1 {
+		t.Fatalf("successful result map = %v, want only ok", got)
+	}
+	msg := err.Error()
+	first := strings.Index(msg, "first:")
+	second := strings.Index(msg, "second:")
+	if !strings.Contains(msg, "2 of 3 lookups failed") || first < 0 || second < 0 || first > second {
+		t.Fatalf("failure summary is not first-seen deterministic: %s", msg)
 	}
 }
 

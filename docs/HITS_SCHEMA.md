@@ -1,6 +1,6 @@
 # Hits JSON schema
 
-`findbtc -json` prints one JSON object per line (JSONL). Every downstream
+`findcrypto -json` prints one JSON object per line (JSONL). Every downstream
 mode (`-report`, `-dfxml`, `-watch`, carves) consumes this interchange,
 so its shape is a compatibility contract, not an implementation detail.
 

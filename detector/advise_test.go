@@ -26,8 +26,8 @@ func TestAdviseDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(ad.Command, "findbtc -walk ") || !strings.Contains(ad.Command, dir) {
-		t.Errorf("command %q, want findbtc -walk <dir>", ad.Command)
+	if !strings.HasPrefix(ad.Command, "findcrypto -walk ") || !strings.Contains(ad.Command, dir) {
+		t.Errorf("command %q, want findcrypto -walk <dir>", ad.Command)
 	}
 	if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, "is a directory") {
 		t.Errorf("reasons %q must name the directory", joined)
@@ -51,8 +51,8 @@ func TestAdvisePartitionedDisk(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ad.Command != "findbtc -fs "+path {
-			t.Errorf("%s: command %q, want findbtc -fs", scheme, ad.Command)
+		if ad.Command != "findcrypto -fs "+path {
+			t.Errorf("%s: command %q, want findcrypto -fs", scheme, ad.Command)
 		}
 		joined := strings.Join(ad.Reasons, "; ")
 		if !strings.Contains(joined, strings.ToUpper(scheme)) || !strings.Contains(joined, "auto-seed") {
@@ -76,8 +76,8 @@ func TestAdviseVolumeImage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(ad.Command, "findbtc -fs ") {
-			t.Errorf("%s: command %q, want findbtc -fs", name, ad.Command)
+		if !strings.HasPrefix(ad.Command, "findcrypto -fs ") {
+			t.Errorf("%s: command %q, want findcrypto -fs", name, ad.Command)
 		}
 		if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, "at offset 0") {
 			t.Errorf("%s: reasons %q must cite the volume", name, joined)
@@ -98,7 +98,7 @@ func TestAdviseRawFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ad.Command != "findbtc "+path {
+	if ad.Command != "findcrypto "+path {
 		t.Errorf("command %q, want a raw scan", ad.Command)
 	}
 	if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, "no partition table or filesystem") {
@@ -173,7 +173,7 @@ func TestAdviseEWFImageScansAsToday(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ad.Command != "findbtc "+path {
+		if ad.Command != "findcrypto "+path {
 			t.Errorf("%s: command %q, want a scan of the image itself", name, ad.Command)
 		}
 		joined := strings.Join(ad.Reasons, "; ")
@@ -187,7 +187,7 @@ func TestAdviseEWFImageScansAsToday(t *testing.T) {
 	}
 }
 
-// EWF2 has no findbtc path: advice carries the libewf conversion
+// EWF2 has no findcrypto path: advice carries the libewf conversion
 // pointer with no command, never a scan that would refuse.
 func TestAdviseEWF2PointsAtLibewf(t *testing.T) {
 	synth := append(bytes.Clone(ewf2Signature), make([]byte, 2040)...)
@@ -260,8 +260,8 @@ func TestAdviseWalletCopyRoutesToHashes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ad.Command != "findbtc -hashes "+tc.path {
-			t.Errorf("%s: command %q, want findbtc -hashes", name, ad.Command)
+		if ad.Command != "findcrypto -hashes "+tc.path {
+			t.Errorf("%s: command %q, want findcrypto -hashes", name, ad.Command)
 		}
 		if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, tc.want) {
 			t.Errorf("%s: reasons %q must name %s", name, joined, tc.want)
@@ -270,7 +270,7 @@ func TestAdviseWalletCopyRoutesToHashes(t *testing.T) {
 }
 
 func TestAdviseKeysFileRoutesToWatch(t *testing.T) {
-	handoff := "# findbtc -complete handoff: watch-only account keys.\n" +
+	handoff := "# findcrypto -complete handoff: watch-only account keys.\n" +
 		"# phrases never land in this file.\n" +
 		bip44MainXPub + "\n" + bip84MainZPub + "\n"
 	path := filepath.Join(t.TempDir(), "keys.txt")
@@ -281,8 +281,8 @@ func TestAdviseKeysFileRoutesToWatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ad.Command != "findbtc -watch "+path {
-		t.Errorf("command %q, want findbtc -watch", ad.Command)
+	if ad.Command != "findcrypto -watch "+path {
+		t.Errorf("command %q, want findcrypto -watch", ad.Command)
 	}
 	joined := strings.Join(ad.Reasons, "; ")
 	if !strings.Contains(joined, "2 checksum-valid extended public keys (xpub+zpub)") {
@@ -328,7 +328,7 @@ func TestAdviseInvalidXpubStaysRaw(t *testing.T) {
 				t.Fatal(err)
 			}
 			ad, err := Advise(path)
-			if err != nil || ad.Command != "findbtc "+path {
+			if err != nil || ad.Command != "findcrypto "+path {
 				t.Fatalf("invalid-key advice = %+v, %v; want raw scan", ad, err)
 			}
 			// A valid key alongside the invalid one still earns a watch
@@ -337,7 +337,7 @@ func TestAdviseInvalidXpubStaysRaw(t *testing.T) {
 				t.Fatal(err)
 			}
 			ad, err = Advise(path)
-			if err != nil || ad.Command != "findbtc -watch "+path ||
+			if err != nil || ad.Command != "findcrypto -watch "+path ||
 				!strings.Contains(strings.Join(ad.Reasons, "; "), "1 checksum-valid extended public key") {
 				t.Fatalf("mixed-key advice = %+v, %v", ad, err)
 			}
@@ -364,7 +364,7 @@ func TestAdviseFirstKilobyteBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ad.Command != "findbtc "+path {
+		if ad.Command != "findcrypto "+path {
 			t.Errorf("%s: command %q, want the raw default", name, ad.Command)
 		}
 	}
@@ -407,7 +407,7 @@ func TestAdviseAmbiguousStaysRaw(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ad.Command != "findbtc "+path {
+		if ad.Command != "findcrypto "+path {
 			t.Errorf("%s: command %q, want the raw default", name, ad.Command)
 		}
 		joined := strings.Join(ad.Reasons, "; ")
@@ -432,7 +432,7 @@ func TestAdviseUnsupportedPartitionsFallBackToRaw(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ad.Command != "findbtc "+path {
+	if ad.Command != "findcrypto "+path {
 		t.Errorf("command %q, want a raw scan", ad.Command)
 	}
 	if joined := strings.Join(ad.Reasons, "; "); !strings.Contains(joined, "none opens as a supported filesystem") {

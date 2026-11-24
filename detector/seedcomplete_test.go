@@ -1,8 +1,9 @@
 package detector
 
 // Seed-completion tests (Goal 32): checksum-gated enumeration of 1–2
-// missing words, most-likely-first ordering, "did you mean" correction,
-// loud refusal past 2 missing, and the seed→watch-only handoff.
+// missing words or one wrong dictionary word, most-likely-first ordering,
+// "did you mean" correction, loud refusal past 2 missing, and the
+// seed→watch-only handoff.
 //
 // Known-answer vectors come from the independent pure-stdlib oracle
 // /tmp/seedvec.py (BIP39 checksum reimplemented from the spec, brute
@@ -86,6 +87,9 @@ func TestCompleteSeedKnownAnswer1Missing(t *testing.T) {
 		fills := make([]string, len(res.Shown))
 		for i, s := range res.Shown {
 			fills[i] = s.Fill[0]
+			if len(s.Positions) != 1 || s.Positions[0] != c.pos {
+				t.Errorf("L=%d pos=%d: completion positions %v, want [%d]", c.length, c.pos, s.Positions, c.pos)
+			}
 		}
 		for i, w := range c.first {
 			if fills[i] != w {
@@ -194,6 +198,10 @@ func TestCompleteSeedKnownAnswer2Missing(t *testing.T) {
 			if res.Shown[i].Fill[0] != want[0] || res.Shown[i].Fill[1] != want[1] {
 				t.Errorf("L=%d gaps=%v: shown[%d] = %v, want oracle %v",
 					c.length, c.gaps, i, res.Shown[i].Fill, want)
+			}
+			if len(res.Shown[i].Positions) != 2 ||
+				res.Shown[i].Positions[0] != c.gaps[0] || res.Shown[i].Positions[1] != c.gaps[1] {
+				t.Errorf("L=%d gaps=%v: shown[%d] positions = %v", c.length, c.gaps, i, res.Shown[i].Positions)
 			}
 		}
 		// Garbage gaps all tie on score, so the head must run in
@@ -314,17 +322,122 @@ func TestCompleteSeedRefusals(t *testing.T) {
 		}
 	}
 	exact := strings.Split(seedOraclePhrases[12], " ")
+	exact[0] = "ABANDON" // valid input spelling/case is preserved byte-for-byte
 	res, err := CompleteSeed(exact, 0)
 	if err != nil {
 		t.Errorf("complete valid phrase: %s", err)
 	} else if res.Total != 1 || len(res.Shown) != 1 {
 		t.Errorf("complete valid phrase: total %d shown %d, want 1 self-completion",
 			res.Total, len(res.Shown))
+	} else if strings.Join(res.Shown[0].Words, " ") != strings.Join(exact, " ") ||
+		len(res.Shown[0].Fill) != 0 || len(res.Shown[0].Positions) != 0 || res.Shown[0].Score != 0 {
+		t.Errorf("complete valid phrase behavior changed: %+v", res.Shown[0])
 	}
 	broken := strings.Split(seedOraclePhrases[12], " ")
 	broken[0] = "zoo" // valid word, breaks the checksum
-	if _, err := CompleteSeed(broken, 0); err == nil {
-		t.Error("complete invalid phrase must error, not self-complete")
+	if res, err := CompleteSeed(broken, 1); err != nil {
+		t.Errorf("complete invalid phrase should enter bounded substitution recovery: %s", err)
+	} else if res.Total == 0 || len(res.Shown) != 1 {
+		t.Errorf("complete invalid phrase: total %d shown %d, want candidates capped at 1", res.Total, len(res.Shown))
+	}
+}
+
+// TestCompleteSeedOneValidWordSubstitution uses an independent Python-oracle
+// vector: changing the official phrase's final "about" to the valid BIP39
+// word "above" breaks the checksum. Exhaustive one-position substitution has
+// 1,542 checksum-valid results; exact edit-distance ordering restores "about"
+// first (distance 2, position 11, wordlist index 3).
+func TestCompleteSeedOneValidWordSubstitution(t *testing.T) {
+	words := strings.Split(seedOraclePhrases[12], " ")
+	words[11] = "above"
+	res, err := CompleteSeed(words, CompleteHardMax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Partial.Gaps) != 0 {
+		t.Fatalf("valid-word substitution reported gaps %v, want none", res.Partial.Gaps)
+	}
+	if res.Total != 1542 || len(res.Shown) != 1542 || res.Truncated {
+		t.Fatalf("shown %d total %d truncated=%v, want oracle 1542/1542/false",
+			len(res.Shown), res.Total, res.Truncated)
+	}
+	head := res.Shown[0]
+	if len(head.Positions) != 1 || head.Positions[0] != 11 ||
+		len(head.Fill) != 1 || head.Fill[0] != "about" || head.Score != 2 {
+		t.Fatalf("head = %+v, want about at position 11 with score 2", head)
+	}
+	if got := strings.Join(head.Words, " "); got != seedOraclePhrases[12] {
+		t.Errorf("head restores %q, want oracle phrase", got)
+	}
+
+	for i, candidate := range res.Shown {
+		if len(candidate.Positions) != 1 || len(candidate.Fill) != 1 {
+			t.Fatalf("candidate %d lacks one-change metadata: %+v", i, candidate)
+		}
+		position := candidate.Positions[0]
+		if position < 0 || position >= len(words) {
+			t.Fatalf("candidate %d position %d out of range", i, position)
+		}
+		if candidate.Fill[0] == words[position] {
+			t.Fatalf("candidate %d retained unchanged word %q at %d", i, candidate.Fill[0], position)
+		}
+		differences := 0
+		indices := make([]uint16, len(candidate.Words))
+		for j, word := range candidate.Words {
+			if word != words[j] {
+				differences++
+				if j != position || word != candidate.Fill[0] {
+					t.Fatalf("candidate %d metadata does not describe change at %d: %+v", i, j, candidate)
+				}
+			}
+			indices[j] = bip39WordIndex[word]
+		}
+		if differences != 1 {
+			t.Fatalf("candidate %d changes %d positions, want exactly one", i, differences)
+		}
+		if !bip39ChecksumValid(indices) {
+			t.Fatalf("candidate %d fails checksum: %v", i, candidate.Words)
+		}
+		if i == 0 {
+			continue
+		}
+		previous := res.Shown[i-1]
+		previousWord := bip39WordIndex[previous.Fill[0]]
+		word := bip39WordIndex[candidate.Fill[0]]
+		if candidate.Score < previous.Score ||
+			(candidate.Score == previous.Score && position < previous.Positions[0]) ||
+			(candidate.Score == previous.Score && position == previous.Positions[0] && word < previousWord) {
+			t.Fatalf("candidate %d out of (distance,position,word) order: prev=%+v current=%+v", i, previous, candidate)
+		}
+	}
+}
+
+// TestCompleteSeedSubstitutionCapAndDeterminism pins the public cap contract
+// for valid-word corrections: Total remains exact, Shown is bounded, and two
+// runs return the same ordered head.
+func TestCompleteSeedSubstitutionCapAndDeterminism(t *testing.T) {
+	words := strings.Split(seedOraclePhrases[12], " ")
+	words[11] = "above"
+	a, err := CompleteSeed(words, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := CompleteSeed(words, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Total != 1542 || len(a.Shown) != 7 || !a.Truncated {
+		t.Fatalf("first run shown %d total %d truncated=%v, want 7/1542/true",
+			len(a.Shown), a.Total, a.Truncated)
+	}
+	if b.Total != a.Total || len(b.Shown) != len(a.Shown) {
+		t.Fatalf("second run shown/total = %d/%d, want %d/%d", len(b.Shown), b.Total, len(a.Shown), a.Total)
+	}
+	for i := range a.Shown {
+		if strings.Join(a.Shown[i].Words, " ") != strings.Join(b.Shown[i].Words, " ") ||
+			a.Shown[i].Score != b.Shown[i].Score || a.Shown[i].Positions[0] != b.Shown[i].Positions[0] {
+			t.Fatalf("run differs at %d: a=%+v b=%+v", i, a.Shown[i], b.Shown[i])
+		}
 	}
 }
 

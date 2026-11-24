@@ -5,13 +5,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
 // ExampleScanWithOptions scans a file end to end: write bytes, collect
 // detections through a closure, print them.
 func ExampleScanWithOptions() {
-	dir, err := os.MkdirTemp("", "findbtc-example")
+	dir, err := os.MkdirTemp("", "findcrypto-example")
 	if err != nil {
 		panic(err)
 	}

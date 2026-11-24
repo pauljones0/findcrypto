@@ -4,13 +4,95 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
+
+func TestSensitiveOutputAtomicPrivateReplace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "recovery.txt")
+	if err := os.WriteFile(path, []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSensitiveFile(path, []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "secret" {
+		t.Fatalf("replacement = %q, %v", raw, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Errorf("replacement mode = %04o, want 0600", got)
+		}
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, ".findcrypto-sensitive-*")); err != nil || len(matches) != 0 {
+		t.Errorf("staging files after commit = %v, %v", matches, err)
+	}
+}
+
+func TestSensitiveOutputAbortPreservesTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "recovery.txt")
+	if err := os.WriteFile(path, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := newSensitiveOutput(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := out.Write([]byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	out.Abort()
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "old" {
+		t.Fatalf("aborted target = %q, %v", raw, err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, ".findcrypto-sensitive-*")); err != nil || len(matches) != 0 {
+		t.Errorf("staging files after abort = %v, %v", matches, err)
+	}
+}
+
+func TestSensitiveOutputDoesNotFollowSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly needs elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.txt")
+	path := filepath.Join(dir, "recovery.txt")
+	if err := os.WriteFile(victim, []byte("victim"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSensitiveFile(path, []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(victim); err != nil || string(raw) != "victim" {
+		t.Fatalf("symlink target changed to %q, %v", raw, err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("output remained a symlink")
+	}
+}
 
 // The module path is the SBOM identity and the go install address: pin it.
 func TestModulePath(t *testing.T) {
@@ -18,7 +100,7 @@ func TestModulePath(t *testing.T) {
 	if !ok {
 		t.Fatal("no build info available")
 	}
-	if want := "github.com/pauljones0/findbtc"; info.Main.Path != want {
+	if want := "github.com/pauljones0/findcrypto"; info.Main.Path != want {
 		t.Fatalf("module path = %q, want %q", info.Main.Path, want)
 	}
 }

@@ -139,6 +139,8 @@ func classifyNeedle(needle string) walletClass {
 		return walletClass{"lightning-lnd", "low", false}
 	case needle == "metamask-vault":
 		return walletClass{"metamask-vault", "high", true}
+	case needle == "solana-keypair":
+		return walletClass{"solana-keypair", "high", false}
 	case needle == "pem-private-key":
 		return walletClass{"pem-private-key", "high", false}
 	case needle == "aws-access-key":
@@ -165,6 +167,7 @@ var playbookOrder = []string{
 	"slip39-share",
 	"lightning-lnd",
 	"metamask-vault",
+	"solana-keypair",
 	"pem-private-key",
 	"aws-access-key",
 	"github-token",
@@ -178,7 +181,7 @@ var playbookSteps = map[string]string{
 	"bip39-seed":              "Seed-phrase-shaped hit: treat any carve as a live secret, move it to encrypted storage, and restore on an offline machine.",
 	"private-key-wif":         "Private-key hit: handle the carve as funds — sweep to a fresh wallet from an offline machine, then discard the exposed key.",
 	"extended-private-key":    "Extended private key: it controls a whole wallet — sweep to a fresh wallet from an offline machine.",
-	"extended-public-key":     "Extended public key (watch-only): run `findbtc -watch carve.bin -watch-out addrs.csv` to derive its addresses locally, then check those addresses anywhere — never paste the key into a website (see docs/WATCH_ONLY.md).",
+	"extended-public-key":     "Extended public key (watch-only): run `findcrypto -watch carve.bin -watch-out addrs.csv` to derive its addresses locally, then check those addresses anywhere — never paste the key into a website (see docs/WATCH_ONLY.md).",
 	"ethereum-keystore":       "Ethereum keystore: it imports into any Web3 wallet once you supply its password.",
 	"electrum-seed":           "Electrum seed: restore it in Electrum on an offline machine (standard/segwit follows automatically); treat any carve as a live secret.",
 	"electrum-file":           "Electrum wallet file: open a copy in Electrum on an offline machine; if it asks for a password, recovering that password is the remaining work.",
@@ -186,6 +189,7 @@ var playbookSteps = map[string]string{
 	"slip39-share":            "SLIP39 Shamir share: one share alone recovers nothing — gather the threshold number of shares, then combine them in a hardware wallet or compatible tool on an offline machine.",
 	"lightning-lnd":           "Lightning (lnd) traces: recover with channel.backup plus the seed via lnd's recovery flow on an offline machine; database fragments alone hold no funds without the seed.",
 	"metamask-vault":          "MetaMask vault (encrypted): it needs its password — run the offline vault decryptor once you have it.",
+	"solana-keypair":          "Solana CLI keypair: treat the carve as a live private key, move it to encrypted storage, and transfer assets to a fresh wallet from an offline machine.",
 	"pem-private-key":         "Private-key block: treat any carve as a live secret — move it to encrypted storage, rotate the key, and purge it from the repo or image it leaked from.",
 	"aws-access-key":          "AWS access key ID: revoke it in IAM unless you own it and it is still needed, then check CloudTrail for misuse between leak and revocation.",
 	"github-token":            "GitHub token: revoke it at github.com/settings/tokens, audit what it touched, and rotate anything it could reach.",
@@ -223,7 +227,7 @@ func buildPlaybook(counts map[string]int, encrypted, crackReady, salvaged, salva
 		steps = append(steps, note)
 	}
 	if hasNearMiss {
-		steps = append(steps, "Partial-seed (near-miss) hits present: with 1–2 words missing, re-run the scan with --reveal, then `findbtc -report hits.jsonl -complete --reveal` enumerates the checksum-valid completions offline (local terminal only; see docs/WHAT_NEXT.md).")
+		steps = append(steps, "Partial-seed hits present: with 1–2 missing words or one wrong dictionary word, re-run the scan with --reveal, then `findcrypto -report hits.jsonl -complete --reveal` enumerates checksum-valid completions offline (local terminal only; see docs/WHAT_NEXT.md).")
 	}
 	return steps
 }

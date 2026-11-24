@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
 // Conformance of `-json` output against the published versioned schema

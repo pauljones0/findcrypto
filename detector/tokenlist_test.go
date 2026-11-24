@@ -70,7 +70,7 @@ func TestEscapeToken(t *testing.T) {
 // Golden: header plus one mutually-exclusive line per word.
 func TestBuildTokenlist(t *testing.T) {
 	got, stats := BuildTokenlist([]byte("\x00kern river 2019\x00"), 256)
-	want := "# findbtc tokenlist: 3 base words, one line each.\n" +
+	want := "# findcrypto tokenlist: 3 base words, one line each.\n" +
 		"# Same-line tokens are mutually exclusive variants; tune --max-tokens.\n" +
 		"kern KERN Kern\n" +
 		"river RIVER River\n" +

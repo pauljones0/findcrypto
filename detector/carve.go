@@ -46,7 +46,7 @@ type carveConfig struct {
 // carveTempPrefix marks atomic-write staging files in carve
 // directories. Staging names never match hit-NNNNNN.*, so carve
 // numbering scans ignore them; CleanCarveTemps reaps them.
-const carveTempPrefix = ".findbtc-tmp-"
+const carveTempPrefix = ".findcrypto-tmp-"
 
 // commitTempFile publishes a staged file at its final name: the
 // old file (if any) is removed first so the rename works on

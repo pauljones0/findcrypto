@@ -1,107 +1,97 @@
-# Releases: verification and redistribution
+# Releases: verification, compatibility, and redistribution
 
-Every tagged release (`v*`) is built by GitHub Actions via GoReleaser
-and ships with checksums, per-archive SBOMs, and SLSA build
-provenance. Verify a download before trusting it with evidence.
+Every tagged release (`v*`) is built by GitHub Actions through GoReleaser and
+ships checksums, per-archive SPDX SBOMs, and GitHub build-provenance
+attestations. Verify a download before trusting it with evidence.
+
+## Rename transition
+
+The first tag after the repository rename establishes `findcrypto` as the
+primary release line. The workflow also builds the same commit as `findbtc` for
+one compatibility cycle. This is intentional migration support, not a second
+codebase:
+
+- `findcrypto_<version>_<os>_<arch>` is the primary archive;
+- `findbtc_<version>_<os>_<arch>` is the compatibility archive;
+- the `findcrypto` deb/rpm contains both `/usr/bin/findcrypto` and
+  `/usr/bin/findbtc`, and replaces/conflicts with the old `findbtc` package;
+- a compatibility `findbtc` deb/rpm preserves the old package name; and
+- `ghcr.io/pauljones0/findcrypto` contains both commands and starts
+  `findcrypto`.
+
+Tags through `v0.2.0` predate the rename and contain only `findbtc` artifacts.
+Do not guess that a generic package-manager channel exists: the README names
+only install paths that are real and tested.
 
 ## What a release contains
 
-Each platform archive (`findbtc_<version>_<os>_<arch>.tar.gz`,
-`.zip` on Windows) holds the `findbtc` binary plus `LICENSE` and
-`README.md`. Linux users should prefer the managed packages
-(`findbtc_<version>_linux_<arch>.deb` / `.rpm`, per arch), which
-install the binary to `/usr/bin` plus docs under
-`/usr/share/doc/findbtc`. Alongside the archives, the release page
-carries:
+Platform archives (`.tar.gz`, or `.zip` on Windows) contain one command plus
+`LICENSE`, `README.md`, and `CHANGELOG.md`. Linux users should prefer the managed
+packages. The release also carries:
 
-- `checksums.txt` — SHA-256 of every archive, package, and SBOM.
-- `<archive>.sbom.json` — SPDX 2.3 software bill of materials per
-  archive (the binary is nearly dependency-free: Go stdlib plus
-  `golang.org/x/sys`).
-- A SLSA v1 provenance attestation per archive and SBOM, signed by
-  the build's GitHub OIDC identity.
+- `checksums.txt` — SHA-256 of every archive, package, and SBOM;
+- `<archive>.sbom.json` — the SPDX software bill of materials; and
+- a provenance attestation bound to the repository, workflow, commit, and
+  checksums file through GitHub OIDC.
 
 ## Verifying a download
 
-1. Fetch the archive, `checksums.txt`, and the `.sbom.json` files
-   from the release page.
+1. Fetch the archive, `checksums.txt`, and its `.sbom.json` from the same tag.
 2. Check integrity:
 
        sha256sum -c checksums.txt
 
-3. Check provenance (needs a `gh` CLI with `attestation`
-   support) against the archive you will run:
+3. Check provenance with the GitHub CLI:
 
-       gh attestation verify findbtc_*_linux_amd64.tar.gz \
-         -R pauljones0/findbtc
+       gh attestation verify findcrypto_*_linux_amd64.tar.gz \
+         -R pauljones0/findcrypto
 
-   A passing report binds the archive to the exact repository commit
-   and workflow run that produced the release. Repeat for the
-   `.sbom.json` files if you rely on them.
-4. Optionally inspect the SBOM for the platform you run:
+4. Optionally inspect the SBOM:
 
        python3 -c "import json,sys; \
          [print(p['name'], p.get('versionInfo')) \
           for p in json.load(open(sys.argv[1]))['packages']]" \
-         findbtc_*_linux_amd64.tar.gz.sbom.json
+         findcrypto_*_linux_amd64.tar.gz.sbom.json
 
-   Expect `github.com/pauljones0/findbtc` at the release commit,
-   `golang.org/x/sys`, and the Go toolchain — nothing else fetches
-   code at build time.
+Expect `github.com/pauljones0/findcrypto` and the Go toolchain. The module has
+no third-party runtime dependencies, and no dependency is fetched at runtime.
 
 ## Reproducing a build
 
-Tagged builds stamp `main.version` with the tag. To rebuild from
-source and compare:
+Tagged builds stamp `main.version`, set the source modification time from the
+commit, disable cgo, and compile with `-trimpath`:
 
     git checkout vX.Y.Z
-    go build -o findbtc-repro .
-    ./findbtc-repro -version   # findbtc vX.Y.Z
+    CGO_ENABLED=0 go build -trimpath -ldflags \
+      "-s -w -X main.version=X.Y.Z" -o findcrypto-repro .
+    ./findcrypto-repro -version
 
-Byte-identical reproduction is not promised (Go build IDs embed
-paths), but `-version`, the SBOM module list, and behavior must
-match the release.
+The release pipeline, Go version, and provenance remain the authoritative build
+record. Compare behavior, version, and SBOM as well as the checksum.
 
 ## Redistribution
 
-findbtc is GPL-3.0-or-later; `LICENSE` ships inside every archive.
-When you redistribute a release — to a lab machine, a case share,
-or a customer — include the archive, its `.sbom.json`, and
-`checksums.txt` together so the recipient can repeat the checks
-above.
+findcrypto is GPL-3.0-or-later. Keep `LICENSE`, the matching SBOM, and
+`checksums.txt` with any redistributed binary so the recipient can repeat the
+checks. Snapshot builds (`*-SNAPSHOT-*`) are CI/dev artifacts, never releases.
 
-Snapshot builds (version `*-SNAPSHOT-*`) are CI/dev artifacts, never
-published to releases; treat them as untrusted for casework.
+## Package-manager migration (maintainers)
 
-## Package-manager automation (maintainers)
+The existing channels are compatibility channels and keep their real names:
 
-The Homebrew tap ([homebrew-findbtc](https://github.com/pauljones0/homebrew-findbtc))
-and Scoop bucket ([scoop-findbtc](https://github.com/pauljones0/scoop-findbtc))
-pin immutable release assets; the bootstrap copies live under
-`packaging/` and `scripts/verify-packaging-pins.py` fails CI if any
-entry's URL, architecture, version, or hash stops matching the
-release's `checksums.txt` (its `--self-test` proves the binding
-checks against offline fixtures, so swapped hashes cannot pass).
+- Homebrew: [`pauljones0/homebrew-findbtc`](https://github.com/pauljones0/homebrew-findbtc),
+  cask `findbtc`;
+- Scoop: [`pauljones0/scoop-findbtc`](https://github.com/pauljones0/scoop-findbtc),
+  manifest `findbtc`; and
+- Winget: identifier `pauljones0.findbtc`, with bootstrap manifests under
+  `packaging/winget`.
 
-- Tap: GoReleaser's `homebrew_casks` block rewrites the cask per
-  release, but `skip_upload` stays true until cross-repo push
-  credentials exist — the default `GITHUB_TOKEN` cannot push to
-  the tap repo. Until then, update `Casks/findbtc.rb` by hand
-  from `packaging/homebrew` on each release. To automate:
-  create a classic PAT with `repo` scope on both `findbtc` and
-  `homebrew-findbtc`, store it as the `TAP_GITHUB_TOKEN` repo
-  secret, flip `skip_upload` to false, and point the release
-  workflow's GoReleaser `GITHUB_TOKEN` at that secret. (External
-  step; the PAT is a long-lived credential — rotate it
-  deliberately and never broaden its scopes.)
-- Bucket: self-updating. The manifest's `checkver`/`autoupdate`
-  stanzas plus the bucket's scheduled `checkver` workflow bump
-  `bucket/findbtc.json` after each release with no extra token;
-  just confirm the workflow stays green.
-- Winget: manifests under `packaging/winget` are prepared and
-  CI-validated (`winget validate` + local `--manifest` install
-  on Windows), but community submission stays a manual,
-  separately-authorized step: place them under
-  `manifests/p/pauljones0/findbtc/<version>/` in a
-  `microsoft/winget-pkgs` PR. Until that PR merges, users
-  install from the local files (see README).
+Their immutable v0.2 pins and offline verifier fixtures remain unchanged. CI
+still installs all three legacy paths and separately snapshot-builds the new
+generic artifacts. GoReleaser renders updated compatibility Homebrew/Winget
+metadata from the `findbtc` archive; cross-repository upload and Winget
+submission remain manual, separately authorized actions.
+
+Create generic Homebrew/Scoop/Winget channels only when they actually exist,
+then update this file and the native-OS install smoke in the same commit. Until
+then, source install and release downloads are the honest generic paths.

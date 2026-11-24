@@ -17,7 +17,7 @@ people lose recoverable wallets.
 >   offline.
 > - **Never pay upfront for "guaranteed" recovery.** Realistic
 >   outcomes are uncertain; guarantees are the scam marker.
-> - findbtc itself never needs your secrets: it prints type labels
+> - findcrypto itself never needs your secrets: it prints type labels
 >   and byte offsets, never key or seed material.
 
 > **WORK ON A COPY, OFFLINE IF YOU CAN.**
@@ -41,8 +41,8 @@ A hit line names a *trace*, not a wallet:
 
 Run `-report` on your hits for a summary with next steps per type:
 
-    findbtc -json /dev/sda > hits.jsonl
-    findbtc -report hits.jsonl
+    findcrypto -json /dev/sda > hits.jsonl
+    findcrypto -report hits.jsonl
 
 **Empty hits file?** An empty `hits.jsonl` means "clean" only when
 the scan covered its target — a scan that read zero bytes produces
@@ -65,11 +65,11 @@ that spot. Markers alone spend nothing — they say "dig here".
 
 **Next:** carve around the hit and look at what came with it:
 
-    findbtc -extract-dir ./carve /dev/sda
-    findbtc -report hits.jsonl
+    findcrypto -extract-dir ./carve /dev/sda
+    findcrypto -report hits.jsonl
 
 Open the sidecar (`hit-NNNNNN.json`): it classifies the carved bytes
-(`bdb`, `sqlite`, ...). If the carve holds database pages, findbtc
+(`bdb`, `sqlite`, ...). If the carve holds database pages, findcrypto
 reassembles them automatically into `hit-NNNNNN.salvage.db` — see
 "Fragment salvage" in the README. Check the sidecar's `verdict`
 first: `valid` is worth opening, `suspect` (with `reasons`) is a
@@ -91,18 +91,19 @@ watch-only (they see addresses but spend nothing).
 **Next:** carve it, then handle by type. Never print or paste the
 key bytes — work from the carve file:
 
-    findbtc -extract-dir ./carve /dev/sda
+    findcrypto -extract-dir ./carve /dev/sda
 
 - Private key (`wif`, `xprv`, ...): sweep the funds to a fresh
   wallet from an **offline** machine, then discard the exposed key.
   The old key is burned the moment it touched a scanned drive.
 - Extended public key (`xpub`, `zpub`, ...): derive its addresses
-  locally and check balances without ever exposing a secret:
+  locally and check activity without ever exposing a secret:
 
-    findbtc -watch ./carve/hit-000003.bin -watch-out addrs.csv
+    findcrypto -watch ./carve/hit-000003.bin -watch-out addrs.csv
 
-  See `docs/WATCH_ONLY.md`. Balances come only from your own
-  Esplora node (`-balance-endpoint`) — never a random website.
+  See `docs/WATCH_ONLY.md`. Activity comes only from an explicitly selected
+  Esplora node (`-balance-endpoint`) — never paste the xpub into a website.
+  Treat `used=true` as evidence even when the current balance is zero.
 
 **Stop when:** the key is testnet (`tprv`/`wif-testnet` — worthless
 play money) or the carve shows the encoding was a fragment that
@@ -121,26 +122,28 @@ be a scrambled phrase — or word salad.
 **Next:** carve it. Owner recovery can print the words, on your own
 machine only, after a loud warning:
 
-    findbtc -extract-dir ./carve /dev/sda
-    findbtc --reveal -json ./carve/hit-000001.bin
+    findcrypto -extract-dir ./carve /dev/sda
+    findcrypto --reveal -json ./carve/hit-000001.bin
 
 Never share, paste, or log `--reveal` output. Restore exact phrases
 in reputable wallet software, offline.
 
 **1–2 words missing or smudged? Complete them offline.** A near-miss
 with 1–2 gaps is enumerable (2,048 tries for one gap, ~4M for two —
-seconds), most-likely first, with "did you mean" typo correction:
+seconds), most-likely first, with "did you mean" typo correction. A phrase
+made entirely of BIP39 words but failing its checksum also gets a bounded
+one-position substitution search, covering one wrong-but-valid word:
 
-    findbtc --reveal -json ./carve/hit-000001.bin > near.jsonl
-    findbtc -report near.jsonl -complete --reveal -complete-out keys.txt
-    findbtc -watch keys.txt -watch-out addrs.csv
+    findcrypto --reveal -json ./carve/hit-000001.bin > near.jsonl
+    findcrypto -report near.jsonl -complete --reveal -complete-out keys.txt
+    findcrypto -watch keys.txt -watch-out addrs.csv
 
 The first command re-scans with words attached (required — completion
 needs the words). The second prints the checksum-valid candidates on
 your local terminal only, plus watch-only account keys per candidate
 (no copy-paste: the keys file feeds `-watch` directly). The third
 derives addresses you can check from your own node (see
-`docs/WATCH_ONLY.md`). Match the funded candidate number back to the
+`docs/WATCH_ONLY.md`). Match the candidate with address history back to the
 phrase on your terminal and restore that one phrase in wallet
 software, offline — then delete the output.
 
@@ -149,19 +152,21 @@ with `xxxx` for each missing word (any non-word letter-run works —
 never a real word), then run the same three commands on that file:
 
     echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon xxxx" > smudged.txt
-    findbtc --reveal -json smudged.txt > near.jsonl
-    findbtc -report near.jsonl -complete --reveal
+    findcrypto --reveal -json smudged.txt > near.jsonl
+    findcrypto -report near.jsonl -complete --reveal
 
 For scrambled phrases, 3+ missing words, or a forgotten passphrase,
 take the carve to
 [BTCRecover](https://github.com/3rdIteration/btcrecover), which
 searches permutations and GPU word combinations offline enumeration
-cannot reach — findbtc refuses those loudly instead of guessing.
+cannot reach — findcrypto refuses those loudly instead of guessing.
 
-**Stop when:** every candidate's addresses are empty on all three
-paths (44/49/84) — the missing words were never findable this way,
-delete the output; `unordered` never resolves to a validating window
-after trying orders (it was word salad); a single SLIP39 share with
+**Stop when:** complete lookups show `used=false` (not merely a zero balance)
+for every derived candidate address on all three paths (44/49/84), after
+raising `-watch-count` if the original wallet could exceed the standard gap
+limit — the words were not findable this way, so delete the output;
+`unordered` never resolves to a validating window after trying orders (it was
+word salad); a single SLIP39 share with
 no path to the threshold (one share alone recovers nothing); anyone
 asks for secrets or money to continue (the scam shield at the top).
 
@@ -175,13 +180,13 @@ are locked; without the password (or a crackable one) nothing moves.
 **Next:** extract crack-ready hashes from a carve or wallet copy —
 never the scanned device itself:
 
-    findbtc -hashes ./carve/hit-000001.bin
+    findcrypto -hashes ./carve/hit-000001.bin
 
 Then follow `docs/PASSWORD_RECOVERY.md` (hashcat, John, BTCRecover).
 If you half-remember the password, `-tokenlist` builds the starting
 BTCRecover tokenlist from the words near the hit:
 
-    findbtc -tokenlist ./carve/hit-000001.bin -tokenlist-out tokens.txt
+    findcrypto -tokenlist ./carve/hit-000001.bin -tokenlist-out tokens.txt
 Start with passwords you have actually used; strong unique forgotten
 passwords are effectively unrecoverable, and anyone promising
 otherwise is selling something (see the scam shield).

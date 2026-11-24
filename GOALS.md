@@ -1,4 +1,8 @@
-# findbtc goal queue
+# findcrypto goal queue
+
+Historical entries retain `findbtc` where they describe the old command,
+package channels, or frozen compatibility contracts. See
+[`docs/MIGRATION.md`](docs/MIGRATION.md) for the active naming policy.
 
 Ranked pain-point goals. Exactly one is the active session goal at a time.
 Each goal is complete only when its audit answers YES to: **"did we
@@ -64,6 +68,7 @@ completely solve the pain point?"**
 | 43 | Follow-up routing + exit honesty | complete | e0d0654 |
 | 44 | FAT deleted-entry long-name recovery | complete | 21f1111 |
 | 45 | Multi-volume filesystem checkpoints | complete | adba07c |
+| 46 | FindCrypto migration + recovery modernization | active | — |
 
 ## Global done criteria (every goal)
 
@@ -1472,6 +1477,34 @@ The 2026-09-29 reconciliation closed every registered side worktree;
 [the audit](.agents/plans/2026-09-29-worktree-reconciliation.md) records
 what was retained and merged. This closes existing work, without starting
 a new queued goal.
+
+## Goal 46 — FindCrypto migration + recovery modernization
+
+**Pain to completely solve:** the repository name still presents the project
+as a Bitcoin-only sandbox even though the scanner already covers multiple
+wallet families, and useful recovery behavior remains split across an unsafe
+prototype and several unreleased follow-ups.
+
+**Completely solved when:**
+- [x] The real post-v0.2 history is reconciled and documented rather than
+      mistaken for disposable sandbox work.
+- [x] The primary module, command, artifacts, container, documentation, and
+      repository contract use `findcrypto`, with an explicit `findbtc`
+      compatibility cycle and frozen evidence identifiers.
+- [x] Useful `wheres-my-wallet` ideas are reimplemented clean-room: one wrong
+      BIP39 dictionary word can be repaired, and address history is not reduced
+      to current balance. Unsafe secret printing and plaintext resume state are
+      not imported.
+- [x] A new chain format is admitted only with independent cryptographic
+      validation; Solana CLI keypairs use the RFC 8032 seed/public-key oracle.
+- [x] Sensitive outputs and case logs are owner-only, watch lookups are bounded
+      and deterministic, invalid BIP32 children do not shorten exports, and the
+      release supply chain is pinned and rehearsed.
+- [ ] Local gates, package snapshots, and the renamed remote repository are
+      verified from the final tree.
+
+**Verify:** `gofmt`, build, vet, full tests, static analysis, workflow lint,
+GoReleaser config and snapshot/package inspection, then remote push/CI.
 
 ## Commit policy
 

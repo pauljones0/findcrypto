@@ -1,6 +1,6 @@
 # Forensic workflow
 
-findbtc scans a copy of the evidence, never the original, and every run
+findcrypto scans a copy of the evidence, never the original, and every run
 can leave a paper trail a reviewer can re-derive: a case log with
 streaming hashes, a verifier for those hashes, and DFXML hit export for
 case tools. This page walks the workflow end to end.
@@ -15,24 +15,24 @@ Mount nothing read-write and scan nothing in place. The standard setup:
   `blockdev --setro /dev/sdX`, or mount with `-o ro,noload`, and never
   let a filesystem journal replay against it.
 - Acquire to an image on separate media first (`ewfacquire`,
-  `ddrescue`, `ftkimager`), then scan the image. findbtc only ever
+  `ddrescue`, `ftkimager`), then scan the image. findcrypto only ever
   reads its input, but the acquisition host can still scribble on an
   unprotected original.
 
 ## 2. Acquire and hash
 
-Hash at acquisition time, before findbtc ever sees the bytes:
+Hash at acquisition time, before findcrypto ever sees the bytes:
 
     sha256sum evidence.E01 evidence.E02 > acquisition.sha256
 
 Keep this file with the case. The case log later attests to what
-findbtc read; the acquisition hash attests to what was captured.
+findcrypto read; the acquisition hash attests to what was captured.
 
 ## 3. Scan the image
 
-Point findbtc at the image and keep a case log:
+Point findcrypto at the image and keep a case log:
 
-    findbtc -json -case-log case.jsonl evidence.E01 > hits.jsonl
+    findcrypto -json -case-log case.jsonl evidence.E01 > hits.jsonl
 
 Supported inputs, detected automatically:
 
@@ -50,7 +50,7 @@ Supported inputs, detected automatically:
   with libewf and scan the raw output:
 
       ewfexport -u -t evidence -f raw evidence.Ex01
-      findbtc -json evidence.raw > hits.jsonl
+      findcrypto -json evidence.raw > hits.jsonl
 - **Split raw** (`base.001`, `base.002`, …): concatenated and scanned
   as one stream; any segment may be named on the command line.
 - **Raw** devices and files, as before.
@@ -203,7 +203,7 @@ was actually covered:
 Re-hash the evidence behind the log. Any change since the scan —
 tampered source, edited log, newly unreadable bytes — fails:
 
-    findbtc -verify-case-log case.jsonl
+    findcrypto -verify-case-log case.jsonl
     # record 1: OK evidence.E01 (1048576 bytes hashed)
 
 Exit status is nonzero on any mismatch, and each line says which
@@ -217,14 +217,14 @@ the log are intact.
 hit, `byte_run` at the hit offset), which Autopsy and DFXML
 pipelines ingest:
 
-    findbtc -dfxml hits.jsonl > hits.dfxml
+    findcrypto -dfxml hits.jsonl > hits.dfxml
 
 The output validates against the NIST `dfxml_schema`
 (`version="1.1.1"`); seed words are never exported, even from
 `--reveal` input. `-report hits.jsonl` stays the human-readable
 triage summary.
 
-Stability note: the findbtc XML namespace
+Stability note: the findcrypto XML namespace
 (`.../jakewins/findbtc/ns/dfxml#`) deliberately keeps its original
 host even though the project moved — namespace identifiers must stay
 stable for existing DFXML consumers. It is frozen, not drift.
@@ -237,7 +237,7 @@ from the evidence, and hash them with the case log:
 
     sha256sum -c acquisition.sha256 && sha256sum carves/* >> case-hashes.txt
 
-## What findbtc does not do
+## What findcrypto does not do
 
 Case management and timeline analysis are out of scope: there is no
 case database, no super-timeline, no multi-examiner workflow. The

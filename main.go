@@ -9,12 +9,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/pauljones0/findbtc/detector"
+	"github.com/pauljones0/findcrypto/detector"
 )
 
 // version is stamped by GoReleaser; dev builds report "dev".
@@ -38,6 +39,100 @@ func gateOnHits(tag string, n int, failOnHit bool) {
 	}
 	fmt.Fprintf(os.Stderr, "[%s] %d %s found (-fail-on-hit): exiting %d\n", tag, n, hitWord, exitHitsFound)
 	os.Exit(exitHitsFound)
+}
+
+// sensitiveOutput stages privacy-sensitive recovery material beside its final
+// path. CreateTemp starts at 0600 regardless of the process umask; the rename
+// then replaces any older, more-permissive target with the staged inode rather
+// than merely rewriting its bytes and retaining its old mode.
+type sensitiveOutput struct {
+	file     *os.File
+	tempPath string
+	path     string
+	writeErr error
+}
+
+func newSensitiveOutput(path string) (*sensitiveOutput, error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".findcrypto-sensitive-*")
+	if err != nil {
+		return nil, err
+	}
+	tempPath := tmp.Name()
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		os.Remove(tempPath)
+		return nil, err
+	}
+	return &sensitiveOutput{file: tmp, tempPath: tempPath, path: path}, nil
+}
+
+func (o *sensitiveOutput) Write(p []byte) (int, error) {
+	if o.writeErr != nil {
+		return 0, o.writeErr
+	}
+	n, err := o.file.Write(p)
+	if err != nil {
+		o.writeErr = err
+	}
+	return n, err
+}
+
+// Abort discards an uncommitted staging file. It is safe after Commit.
+func (o *sensitiveOutput) Abort() {
+	if o == nil || o.tempPath == "" {
+		return
+	}
+	if o.file != nil {
+		o.file.Close()
+		o.file = nil
+	}
+	os.Remove(o.tempPath)
+	o.tempPath = ""
+}
+
+// Commit flushes the complete staged output and publishes it at the final
+// path. os.Rename replaces files and symlinks without following them, so a
+// caller-controlled output path cannot redirect these bytes through a symlink.
+func (o *sensitiveOutput) Commit() error {
+	if o == nil || o.tempPath == "" || o.file == nil {
+		return fmt.Errorf("sensitive output is not open")
+	}
+	if o.writeErr != nil {
+		err := o.writeErr
+		o.Abort()
+		return err
+	}
+	if err := o.file.Sync(); err != nil {
+		o.Abort()
+		return err
+	}
+	if err := o.file.Close(); err != nil {
+		o.file = nil
+		os.Remove(o.tempPath)
+		o.tempPath = ""
+		return err
+	}
+	o.file = nil
+	if err := os.Rename(o.tempPath, o.path); err != nil {
+		os.Remove(o.tempPath)
+		o.tempPath = ""
+		return err
+	}
+	o.tempPath = ""
+	return nil
+}
+
+func writeSensitiveFile(path string, data []byte) error {
+	out, err := newSensitiveOutput(path)
+	if err != nil {
+		return err
+	}
+	if _, err := out.Write(data); err != nil {
+		out.Abort()
+		return err
+	}
+	return out.Commit()
 }
 
 func main() {
@@ -67,7 +162,7 @@ func main() {
 	watchOut := flag.String("watch-out", "", "Write the address list to PATH instead of stdout (only with -watch)")
 	watchFormat := flag.String("watch-format", "csv", "Address-list format: csv or json (only with -watch)")
 	watchCount := flag.Int("watch-count", detector.WatchDefaultCount, "Addresses to derive per chain, external and change (only with -watch)")
-	balanceEndpoint := flag.String("balance-endpoint", "", "Opt-in: query ADDRESS balances from this Esplora-compatible base URL (only with -watch; leaks addresses to that server)")
+	balanceEndpoint := flag.String("balance-endpoint", "", "Opt-in: query ADDRESS activity and balances from this Esplora-compatible base URL (only with -watch; leaks addresses to that server)")
 	fsPath := flag.String("fs", "", "Filesystem-aware mode: recover deleted entries with names from the NTFS/ext/FAT/exFAT/XFS volume in FILE and scan their content")
 	fsOffset := flag.Int64("fs-offset", 0, "Byte offset of the volume boot sector inside FILE (only with -fs and -unallocated-only); when omitted, the partition table is followed automatically")
 	unallocatedOnly := flag.Bool("unallocated-only", false, "Scan only unallocated filesystem space (volume at -fs-offset); skips live data")
@@ -80,7 +175,7 @@ func main() {
 	failOnHit := flag.Bool("fail-on-hit", false, "Exit 3 when the scan or report finds anything (for CI gates and pre-commit hooks); without it, finding hits still exits 0")
 	targetsFile := flag.String("targets", "", "Read more scan targets from FILE (one path per line; blank lines and # comments ignored) in addition to positionals (flags must precede targets)")
 	genCompletion := flag.String("gen-completion", "", "Write a shell completion script for bash, zsh, or fish to stdout and exit (generated from the flag table; scan inputs still refuse)")
-	genMan := flag.Bool("gen-man", false, "Write the findbtc man page (troff) to stdout and exit (OPTIONS generated from the flag table; scan inputs still refuse)")
+	genMan := flag.Bool("gen-man", false, fmt.Sprintf("Write the %s man page (troff) to stdout and exit (OPTIONS generated from the flag table; scan inputs still refuse)", commandName()))
 	flag.Parse()
 
 	// Flag-presence probes (above the mode guard: the guard must
@@ -173,7 +268,7 @@ func main() {
 	// -unallocated-only follow the partition table (Goal 12).
 	// (Presence probes live above the mode guard.)
 	if *showVersion {
-		fmt.Printf("findbtc %s\n", version)
+		fmt.Printf("%s %s\n", commandName(), version)
 		return
 	}
 	if *reveal {
@@ -181,7 +276,7 @@ func main() {
 	}
 	if *complete || *completeOut != "" || completeMaxSet {
 		if *reportPath == "" {
-			fmt.Fprintln(os.Stderr, "[complete] Exiting due to error: -complete is a -report follow-up: findbtc -report hits.jsonl -complete --reveal")
+			fmt.Fprintln(os.Stderr, "[complete] Exiting due to error: -complete is a -report follow-up: findcrypto -report hits.jsonl -complete --reveal")
 			os.Exit(2)
 		}
 		if !*complete {
@@ -521,7 +616,7 @@ func main() {
 
 // resolveScanTargets joins positional targets with -targets FILE
 // entries (one path per line; blank lines and # comments skipped).
-// Positionals keep their order first so `findbtc -targets rest.txt
+// Positionals keep their order first so `findcrypto -targets rest.txt
 // a.img` scans a.img before the listed paths. Flags must precede
 // targets: Go's flag parser stops at the first positional, so
 // anything after it is a target — use -- before dash-prefixed
@@ -995,49 +1090,50 @@ func runReport(path string, jsonOut bool, failOnHit, complete bool, completeOut 
 }
 
 // runSeedComplete implements the -report -complete follow-up: enumerate
-// checksum-valid completions for partial-seed (near-miss) hits carrying
-// --reveal words, most-likely first, with a "did you mean" correction
-// and an optional watch-only handoff file. Always exits 0: refusals and
-// empty inputs are completed triage answers, not failures.
+// checksum-valid completions for partial-seed (near-miss) hits and try one
+// substituted word for all-valid, checksum-failed (unordered) hits carrying
+// --reveal words. Candidates sort most-likely first and can feed an optional
+// watch-only handoff file. Always exits 0: refusals and empty inputs are
+// completed triage answers, not failures.
 func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 	fmt.Fprintln(os.Stderr, detector.SeedCompleteWarning())
-	var near []detector.Detection
-	unordered := 0
+	var work []detector.Detection
+	nearMisses, unordered := 0, 0
 	for _, d := range dets {
 		switch {
 		case strings.Contains(d.Needle, "near-miss"):
-			near = append(near, d)
+			work = append(work, d)
+			nearMisses++
 		case d.Needle == "bip39-unordered":
+			work = append(work, d)
 			unordered++
 		}
 	}
-	if len(near) == 0 {
-		fmt.Printf("Seed completion: no partial-seed (near-miss) hits to complete in %s.\n", path)
+	if len(work) == 0 {
+		fmt.Printf("Seed completion: no partial or checksum-failed BIP39 hits to complete in %s.\n", path)
 		fmt.Println("Two usual reasons:")
-		fmt.Println("  1. The hits were scanned without --reveal, so no words are attached. Rescan the carve on your own machine: findbtc --reveal -json CARVE > hits2.jsonl")
+		fmt.Println("  1. The hits were scanned without --reveal, so no words are attached. Rescan the carve on your own machine: findcrypto --reveal -json CARVE > hits2.jsonl")
 		fmt.Println("  2. Three or more words are missing or garbled: billions of tries, beyond offline enumeration. Take the carve to BTCRecover with GPU tokenlists (see docs/WHAT_NEXT.md).")
-		if unordered > 0 {
-			fmt.Printf("  (%d unordered word-pile hits are not completable either: reordering is BTCRecover's job, not enumeration.)\n", unordered)
-		}
 		return
 	}
-	var out *os.File
+	var out *sensitiveOutput
 	if outPath != "" {
 		var err error
-		out, err = os.Create(outPath)
+		out, err = newSensitiveOutput(outPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
-		defer out.Close()
-		fmt.Fprintln(out, "# findbtc -complete handoff: watch-only account keys (3 per candidate).")
+		defer out.Abort()
+		fmt.Fprintln(out, "# findcrypto -complete handoff: watch-only account keys (3 per candidate).")
 		fmt.Fprintln(out, "# Candidate numbers match the terminal listing above; phrases never land in this file.")
 	}
 	wordless := 0
 	completed := 0
 	totalKeys := 0
-	fmt.Printf("Seed completion (offline; %d partial-seed hits in %s):\n", len(near), path)
-	for i, d := range near {
+	fmt.Printf("Seed completion (offline; %d candidate hits in %s: %d near-miss, %d all-valid checksum-failed runs):\n",
+		len(work), path, nearMisses, unordered)
+	for i, d := range work {
 		tag := fmt.Sprintf("[hit %d] %s @%d (%s)", i+1, d.Needle, d.Offset, d.Target)
 		if len(d.Words) == 0 {
 			fmt.Printf("%s — no words attached (scanned without --reveal); rescan the carve with --reveal to complete it.\n", tag)
@@ -1047,10 +1143,18 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 		res, err := detector.CompleteSeed(d.Words, max)
 		if err != nil {
 			fmt.Printf("%s REFUSED: %s\n", tag, err.Error())
+			if d.Needle == "bip39-unordered" {
+				fmt.Println("  One-position substitution accepts exact BIP39 seed lengths only (12/15/18/21/24 words); use BTCRecover for long piles, swaps, or reordering.")
+			}
 			continue
 		}
 		completed++
-		fmt.Printf("%s gaps=%v\n", tag, res.Partial.Gaps)
+		if d.Needle == "bip39-unordered" {
+			fmt.Printf("%s strategy=one-position-substitution (all words are valid BIP39 words, but the checksum fails)\n", tag)
+			fmt.Println("  This tries one changed word only; swaps and reordering are not searched. Use BTCRecover for those cases.")
+		} else {
+			fmt.Printf("%s gaps=%v\n", tag, res.Partial.Gaps)
+		}
 		for _, c := range res.Corrections {
 			fmt.Printf("  did you mean %q at position %d? (gap was %q; checksum-valid)\n",
 				c.Suggest[0], c.Position, c.Token)
@@ -1068,6 +1172,7 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 			if out != nil {
 				accts, err := detector.SeedToAccounts(s.Words)
 				if err != nil {
+					out.Abort()
 					fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
 					os.Exit(1)
 				}
@@ -1079,20 +1184,24 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 			}
 		}
 		if res.Truncated {
-			fmt.Printf("  ... %d more not shown. Narrow the gaps (fix a typo) or raise -complete-max (max %d).\n",
+			fmt.Printf("  ... %d more not shown. Review typo-near candidates first or raise -complete-max (max %d).\n",
 				res.Total-len(res.Shown), detector.CompleteHardMax)
 		}
 	}
 	if wordless > 0 {
-		fmt.Printf("%d of %d near-miss hits carry no words: rescan with --reveal on your own machine, then re-run -complete.\n", wordless, len(near))
+		fmt.Printf("%d of %d candidate hits carry no words: rescan with --reveal on your own machine, then re-run -complete.\n", wordless, len(work))
 	}
 	if out != nil {
+		if err := out.Commit(); err != nil {
+			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+			os.Exit(1)
+		}
 		fmt.Printf("Wrote %d watch-only account keys to %s (3 per candidate: m/44'/0'/0' xpub, m/49'/0'/0' ypub, m/84'/0'/0' zpub).\n", totalKeys, outPath)
-		fmt.Printf("Next: findbtc -watch %s -watch-out addrs.csv — then check those addresses from your own node (see docs/WATCH_ONLY.md). Match the funded candidate number back to the phrase above and restore it in wallet software, offline.\n", outPath)
+		fmt.Printf("Next: findcrypto -watch %s -watch-out addrs.csv — then check those addresses from your own node (see docs/WATCH_ONLY.md). Match any candidate with address history (even a zero current balance) back to the phrase above and restore it in wallet software, offline.\n", outPath)
 	} else if completed > 0 {
-		fmt.Println("Next: re-run with -complete-out keys.txt to derive watch-only account keys for these candidates, then findbtc -watch keys.txt -watch-out addrs.csv.")
+		fmt.Println("Next: re-run with -complete-out keys.txt to derive watch-only account keys for these candidates, then findcrypto -watch keys.txt -watch-out addrs.csv.")
 	}
-	fmt.Println("When to stop: a candidate whose addresses are all empty on every path is the wrong phrase — delete the output. If no candidate funds, the missing words were never findable this way; see docs/WHAT_NEXT.md.")
+	fmt.Println("When to stop: a candidate with no transaction history on any checked address/path is likely wrong. Never reject a candidate solely because its current balance is zero: a genuine used wallet may have spent everything. If no candidate has any history, see docs/WHAT_NEXT.md.")
 }
 
 // runDFXML implements DFXML-export mode: convert saved -json hits to a
@@ -1211,7 +1320,7 @@ func runTokenlist(path, outPath string, max int) {
 		return
 	}
 	if outPath != "" {
-		if err := os.WriteFile(outPath, []byte(text), 0644); err != nil {
+		if err := writeSensitiveFile(outPath, []byte(text)); err != nil {
 			fmt.Fprintf(os.Stderr, "[tokenlist] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
@@ -1378,7 +1487,7 @@ func runSalvage(path, outPath string, jsonOut bool) {
 		return
 	}
 	if outPath != "" {
-		if err := os.WriteFile(outPath, r.Image, 0644); err != nil {
+		if err := writeSensitiveFile(outPath, r.Image); err != nil {
 			fmt.Fprintf(os.Stderr, "[salvage] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
@@ -1430,8 +1539,8 @@ func runSalvage(path, outPath string, jsonOut bool) {
 
 // runWatch implements watch-only mode: derive addresses locally from extended
 // public keys found in a file (a carve, a pasted key, or hits.jsonl whose
-// carves are then searched), and optionally look up balances at an explicit
-// endpoint. The default path performs zero network I/O.
+// carves are then searched), and optionally look up address activity at an
+// explicit Esplora endpoint. The default path performs zero network I/O.
 func runWatch(path, outPath, format string, count int, endpoint string) {
 	if format != "csv" && format != "json" {
 		fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: -watch-format must be csv or json\n")
@@ -1466,7 +1575,7 @@ func runWatch(path, outPath, format string, count int, endpoint string) {
 		// stdout (exit 0), matching -hashes/-salvage: only the
 		// private-material refusal stays a loud exit 1.
 		if privFound {
-			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: found only private extended keys — findbtc never derives from private material (move the key to an offline machine and sweep to a fresh wallet)\n")
+			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: found only private extended keys — findcrypto never derives from private material (move the key to an offline machine and sweep to a fresh wallet)\n")
 			os.Exit(1)
 		}
 		fmt.Printf("No extended public keys in %s\n", path)
@@ -1484,26 +1593,33 @@ func runWatch(path, outPath, format string, count int, endpoint string) {
 			addrs[i] = e.Address
 		}
 		client := &http.Client{Timeout: 30 * time.Second}
-		balances, err := detector.LookupBalances(client, endpoint, addrs)
+		activity, err := detector.LookupActivity(client, endpoint, addrs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[watch] warning: %s\n", err.Error())
 		}
 		for i := range entries {
-			if b, ok := balances[entries[i].Address]; ok {
-				b := b
-				entries[i].BalanceSats = &b
+			if a, ok := activity[entries[i].Address]; ok {
+				balance, txCount := a.BalanceSats, a.TxCount
+				funded, spent, used := a.FundedTxoSum, a.SpentTxoSum, a.Used
+				entries[i].BalanceSats = &balance
+				entries[i].TxCount = &txCount
+				entries[i].FundedTxoSum = &funded
+				entries[i].SpentTxoSum = &spent
+				entries[i].Used = &used
 			}
 		}
 	}
-	out := os.Stdout
+	var out io.Writer = os.Stdout
+	var sensitive *sensitiveOutput
 	if outPath != "" {
 		var err error
-		out, err = os.Create(outPath)
+		sensitive, err = newSensitiveOutput(outPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
-		defer out.Close()
+		defer sensitive.Abort()
+		out = sensitive
 	}
 	if format == "json" {
 		err = detector.WriteWatchJSON(out, entries)
@@ -1511,8 +1627,17 @@ func runWatch(path, outPath, format string, count int, endpoint string) {
 		err = detector.WriteWatchCSV(out, entries)
 	}
 	if err != nil {
+		if sensitive != nil {
+			sensitive.Abort()
+		}
 		fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: %s\n", err.Error())
 		os.Exit(1)
+	}
+	if sensitive != nil {
+		if err := sensitive.Commit(); err != nil {
+			fmt.Fprintf(os.Stderr, "[watch] Exiting due to error: %s\n", err.Error())
+			os.Exit(1)
+		}
 	}
 	fps := map[string]bool{}
 	for _, s := range pubs {
@@ -1527,7 +1652,7 @@ func runWatch(path, outPath, format string, count int, endpoint string) {
 	sort.Strings(fpList)
 	netNote := ""
 	if endpoint != "" {
-		netNote = " except balance lookups"
+		netNote = " except activity lookups"
 	}
 	fmt.Fprintf(os.Stderr, "[watch] Derived %d addresses from %d keys (fingerprints: %s); no network calls were made%s.\n",
 		len(entries), len(pubs), strings.Join(fpList, ", "), netNote)

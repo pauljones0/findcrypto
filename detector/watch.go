@@ -1,6 +1,7 @@
 package detector
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -15,12 +16,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Watch-only address derivation from extended public keys (BIP32/49/84,
 // SLIP132 versions). Everything here is local and offline: child public keys
 // come from CKDpub, addresses from HASH160 plus base58check/bech32 encoding.
-// Private extended keys are refused outright — findbtc never derives from,
+// Private extended keys are refused outright — findcrypto never derives from,
 // stores, or prints private material.
 //
 // Only key fingerprints (HASH160(pubkey)[:4], the descriptor convention)
@@ -91,7 +93,7 @@ func ParseXPub(s string) (*XPub, error) {
 		return nil, fmt.Errorf("unknown extended-key version 0x%08x", binary.BigEndian.Uint32(payload[:4]))
 	}
 	if xprvLabels[label] {
-		return nil, fmt.Errorf("refusing private extended key (%s): findbtc never derives from private material", label)
+		return nil, fmt.Errorf("refusing private extended key (%s): findcrypto never derives from private material", label)
 	}
 	ks, ok := xpubScripts[label]
 	if !ok {
@@ -285,14 +287,18 @@ func ExtractXpubs(data []byte) (pubs []string, privFound bool) {
 
 // WatchEntry is one derived watch-only address plus its provenance.
 type WatchEntry struct {
-	Fingerprint string `json:"fingerprint"`
-	Version     string `json:"version"`
-	Chain       uint32 `json:"chain"` // 0 = external, 1 = change
-	Index       uint32 `json:"index"`
-	Path        string `json:"path"` // "chain/index" below the account key
-	Address     string `json:"address"`
-	Script      string `json:"script"`
-	BalanceSats *int64 `json:"balance_sats,omitempty"`
+	Fingerprint  string `json:"fingerprint"`
+	Version      string `json:"version"`
+	Chain        uint32 `json:"chain"` // 0 = external, 1 = change
+	Index        uint32 `json:"index"`
+	Path         string `json:"path"` // "chain/index" below the account key
+	Address      string `json:"address"`
+	Script       string `json:"script"`
+	BalanceSats  *int64 `json:"balance_sats,omitempty"`
+	TxCount      *int64 `json:"tx_count,omitempty"`
+	FundedTxoSum *int64 `json:"funded_txo_sum,omitempty"`
+	SpentTxoSum  *int64 `json:"spent_txo_sum,omitempty"`
+	Used         *bool  `json:"used,omitempty"`
 }
 
 // CollectWatchAddrs derives perChain addresses on each of the external (0)
@@ -313,54 +319,88 @@ func CollectWatchAddrs(xpubs []string, perChain int) ([]WatchEntry, error) {
 			if err != nil {
 				return nil, fmt.Errorf("cannot derive chain %d: %w", chain, err)
 			}
-			for idx := 0; idx < perChain; idx++ {
-				child, err := DeriveChild(chainKey, uint32(idx))
-				if err == errInvalidChild {
-					continue // per BIP32, skip the index
-				}
-				if err != nil {
-					return nil, fmt.Errorf("cannot derive %d/%d: %w", chain, idx, err)
-				}
-				addr, err := child.Address()
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, WatchEntry{
-					Fingerprint: fp,
-					Version:     acct.Label,
-					Chain:       chain,
-					Index:       uint32(idx),
-					Path:        fmt.Sprintf("%d/%d", chain, idx),
-					Address:     addr,
-					Script:      acct.Script,
-				})
+			entries, err := collectWatchChain(acct, chainKey, fp, chain, perChain, 0, DeriveChild)
+			if err != nil {
+				return nil, err
 			}
+			out = append(out, entries...)
 		}
 	}
 	return out, nil
 }
 
-// WriteWatchCSV writes entries with a header row; balance_sats cells stay
-// empty when no lookup ran or an address lookup failed.
+type watchChildDeriver func(*XPub, uint32) (*XPub, error)
+
+// collectWatchChain returns exactly perChain valid children. BIP32 requires an
+// invalid child to be skipped in favor of the next index; counting attempted
+// indices instead would silently shorten an export and could hide the only
+// address with history. start is zero in production and injectable in tests so
+// the non-hardened boundary can be exercised without billions of derivations.
+func collectWatchChain(acct, chainKey *XPub, fingerprint string, chain uint32, perChain int, start uint32, derive watchChildDeriver) ([]WatchEntry, error) {
+	out := make([]WatchEntry, 0, perChain)
+	for idx := start; len(out) < perChain; idx++ {
+		if idx >= 0x80000000 {
+			return nil, fmt.Errorf("cannot derive %d: exhausted non-hardened child indexes after %d valid addresses", chain, len(out))
+		}
+		child, err := derive(chainKey, idx)
+		if err == errInvalidChild {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("cannot derive %d/%d: %w", chain, idx, err)
+		}
+		addr, err := child.Address()
+		if err != nil {
+			return nil, fmt.Errorf("cannot render %d/%d: %w", chain, idx, err)
+		}
+		out = append(out, WatchEntry{
+			Fingerprint: fingerprint,
+			Version:     acct.Label,
+			Chain:       chain,
+			Index:       idx,
+			Path:        fmt.Sprintf("%d/%d", chain, idx),
+			Address:     addr,
+			Script:      acct.Script,
+		})
+	}
+	return out, nil
+}
+
+// WriteWatchCSV writes entries with a header row. Activity cells stay empty
+// when no lookup ran or an address lookup failed; a successful lookup of an
+// unused address writes explicit zeroes and false so "unknown" never looks
+// like "unused". New activity columns append after the original schema to
+// keep existing column positions stable.
 func WriteWatchCSV(w io.Writer, entries []WatchEntry) error {
 	cw := csv.NewWriter(w)
-	if err := cw.Write([]string{"fingerprint", "version", "chain", "index", "path", "address", "script", "balance_sats"}); err != nil {
+	if err := cw.Write([]string{"fingerprint", "version", "chain", "index", "path", "address", "script", "balance_sats", "tx_count", "funded_txo_sum", "spent_txo_sum", "used"}); err != nil {
 		return err
 	}
 	for _, e := range entries {
-		bal := ""
-		if e.BalanceSats != nil {
-			bal = strconv.FormatInt(*e.BalanceSats, 10)
+		bal := optionalInt64(e.BalanceSats)
+		txCount := optionalInt64(e.TxCount)
+		funded := optionalInt64(e.FundedTxoSum)
+		spent := optionalInt64(e.SpentTxoSum)
+		used := ""
+		if e.Used != nil {
+			used = strconv.FormatBool(*e.Used)
 		}
 		if err := cw.Write([]string{e.Fingerprint, e.Version,
 			strconv.FormatUint(uint64(e.Chain), 10),
 			strconv.FormatUint(uint64(e.Index), 10),
-			e.Path, e.Address, e.Script, bal}); err != nil {
+			e.Path, e.Address, e.Script, bal, txCount, funded, spent, used}); err != nil {
 			return err
 		}
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+func optionalInt64(v *int64) string {
+	if v == nil {
+		return ""
+	}
+	return strconv.FormatInt(*v, 10)
 }
 
 // WriteWatchJSON writes entries as an indented JSON array.
@@ -376,66 +416,243 @@ func WriteWatchJSON(w io.Writer, entries []WatchEntry) error {
 	return err
 }
 
-// esploraStats is the funded/spent subset of an Esplora address response.
+// AddressActivity is the confirmed-plus-mempool activity Esplora reports for
+// one address. Used remains true for an address whose balance is now zero,
+// which is the critical distinction when triaging recovery candidates.
+type AddressActivity struct {
+	TxCount      int64
+	FundedTxoSum int64
+	SpentTxoSum  int64
+	BalanceSats  int64
+	Used         bool
+}
+
+// esploraStats is the activity subset of an Esplora address response.
+// Pointers distinguish a real zero from a syntactically valid but incomplete
+// response; incomplete responses are lookup failures, never "unused".
 type esploraStats struct {
-	FundedTxoSum int64 `json:"funded_txo_sum"`
-	SpentTxoSum  int64 `json:"spent_txo_sum"`
+	TxCount      *int64 `json:"tx_count"`
+	FundedTxoSum *int64 `json:"funded_txo_sum"`
+	SpentTxoSum  *int64 `json:"spent_txo_sum"`
 }
 
 // esploraAddress is the subset of GET /address/:addr this client reads.
 type esploraAddress struct {
-	ChainStats   esploraStats `json:"chain_stats"`
-	MempoolStats esploraStats `json:"mempool_stats"`
+	ChainStats   *esploraStats `json:"chain_stats"`
+	MempoolStats *esploraStats `json:"mempool_stats"`
 }
 
-// LookupBalances queries an Esplora-compatible endpoint
-// (GET {endpoint}/address/:addr) for each address and returns confirmed plus
-// mempool balances in sats. Per-address failures are collected into one
-// error; successes are still returned. The client performs network I/O — it
-// is only constructed on the explicit opt-in path, never by default.
-func LookupBalances(client *http.Client, endpoint string, addrs []string) (map[string]int64, error) {
+// EsploraLookupConcurrency bounds opt-in endpoint load. Eight concurrent
+// requests keeps a 40-address default watch responsive without turning a
+// large -watch-count into an unbounded burst against a local or public node.
+const EsploraLookupConcurrency = 8
+
+type activityLookupJob struct {
+	index int
+	addr  string
+}
+
+type activityLookupResult struct {
+	index    int
+	activity AddressActivity
+	err      error
+}
+
+// LookupActivity queries an Esplora-compatible endpoint
+// (GET {endpoint}/address/:addr) for each address and returns combined
+// confirmed+mempool transaction count, funded/spent totals, current balance,
+// and whether the address has ever been used. Per-address failures are
+// collected into one error; successes are still returned and failed addresses
+// have no map entry, preserving unknown rather than manufacturing zeroes. The
+// client performs network I/O only on this explicit opt-in path.
+func LookupActivity(client *http.Client, endpoint string, addrs []string) (map[string]AddressActivity, error) {
+	return LookupActivityContext(context.Background(), client, endpoint, addrs)
+}
+
+// LookupActivityContext is LookupActivity with caller-controlled cancellation.
+// Addresses are deduplicated in first-seen order, then queried by a bounded
+// worker pool. Results and combined failures are assembled in that original
+// order, so scheduling and endpoint latency cannot make output nondeterministic.
+func LookupActivityContext(ctx context.Context, client *http.Client, endpoint string, addrs []string) (map[string]AddressActivity, error) {
 	base := strings.TrimSuffix(strings.TrimSpace(endpoint), "/")
 	if base == "" {
-		return nil, errors.New("empty balance endpoint")
+		return nil, errors.New("empty Esplora endpoint")
 	}
 	if client == nil {
 		return nil, errors.New("no HTTP client")
 	}
-	balances := map[string]int64{}
-	var failures []string
+	if ctx == nil {
+		return nil, errors.New("nil context")
+	}
+
+	unique := make([]string, 0, len(addrs))
 	seen := map[string]bool{}
 	for _, addr := range addrs {
 		if seen[addr] {
 			continue
 		}
 		seen[addr] = true
-		resp, err := client.Get(base + "/address/" + addr)
-		if err != nil {
+		unique = append(unique, addr)
+	}
+
+	activity := make(map[string]AddressActivity, len(unique))
+	if len(unique) == 0 {
+		return activity, nil
+	}
+
+	jobs := make(chan activityLookupJob)
+	resultCh := make(chan activityLookupResult, len(unique))
+	workers := EsploraLookupConcurrency
+	if len(unique) < workers {
+		workers = len(unique)
+	}
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				a, err := lookupOneActivity(ctx, client, base, job.addr)
+				resultCh <- activityLookupResult{index: job.index, activity: a, err: err}
+			}
+		}()
+	}
+
+sendJobs:
+	for i, addr := range unique {
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case jobs <- activityLookupJob{index: i, addr: addr}:
+		case <-ctx.Done():
+			break sendJobs
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(resultCh)
+
+	results := make([]activityLookupResult, len(unique))
+	attempted := make([]bool, len(unique))
+	for result := range resultCh {
+		results[result.index] = result
+		attempted[result.index] = true
+	}
+	ctxErr := ctx.Err()
+	var failures []string
+	for i, addr := range unique {
+		if !attempted[i] {
+			err := ctxErr
+			if err == nil {
+				err = errors.New("lookup was not attempted")
+			}
 			failures = append(failures, fmt.Sprintf("%s: %s", addr, err.Error()))
 			continue
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %s", addr, err.Error()))
+		if results[i].err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", addr, results[i].err.Error()))
 			continue
 		}
-		if resp.StatusCode != 200 {
-			failures = append(failures, fmt.Sprintf("%s: HTTP %d", addr, resp.StatusCode))
-			continue
-		}
-		var ea esploraAddress
-		if err := json.Unmarshal(body, &ea); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: bad response: %s", addr, err.Error()))
-			continue
-		}
-		funded := ea.ChainStats.FundedTxoSum + ea.MempoolStats.FundedTxoSum
-		spent := ea.ChainStats.SpentTxoSum + ea.MempoolStats.SpentTxoSum
-		balances[addr] = funded - spent
+		activity[addr] = results[i].activity
 	}
 	if len(failures) > 0 {
-		return balances, fmt.Errorf("%d of %d lookups failed: %s",
-			len(failures), len(seen), strings.Join(failures, "; "))
+		err := fmt.Errorf("%d of %d lookups failed: %s",
+			len(failures), len(unique), strings.Join(failures, "; "))
+		if ctxErr != nil {
+			return activity, fmt.Errorf("%w: %v", ctxErr, err)
+		}
+		return activity, err
 	}
-	return balances, nil
+	return activity, nil
+}
+
+func lookupOneActivity(ctx context.Context, client *http.Client, base, addr string) (AddressActivity, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/address/"+addr, nil)
+	if err != nil {
+		return AddressActivity{}, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return AddressActivity{}, err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	closeErr := resp.Body.Close()
+	if readErr != nil {
+		return AddressActivity{}, readErr
+	}
+	if closeErr != nil {
+		return AddressActivity{}, closeErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return AddressActivity{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var ea esploraAddress
+	if err := json.Unmarshal(body, &ea); err != nil {
+		return AddressActivity{}, fmt.Errorf("bad response: %w", err)
+	}
+	a, err := combineEsploraActivity(ea)
+	if err != nil {
+		return AddressActivity{}, fmt.Errorf("bad response: %w", err)
+	}
+	return a, nil
+}
+
+// combineEsploraActivity validates the required Esplora shape before adding
+// the confirmed and mempool counters. Endpoint data is untrusted: negative or
+// overflowing counters are rejected so they cannot wrap into a false zero.
+func combineEsploraActivity(e esploraAddress) (AddressActivity, error) {
+	if e.ChainStats == nil || e.MempoolStats == nil {
+		return AddressActivity{}, errors.New("missing chain_stats or mempool_stats")
+	}
+	c, m := e.ChainStats, e.MempoolStats
+	if c.TxCount == nil || c.FundedTxoSum == nil || c.SpentTxoSum == nil ||
+		m.TxCount == nil || m.FundedTxoSum == nil || m.SpentTxoSum == nil {
+		return AddressActivity{}, errors.New("missing activity counter")
+	}
+	txCount, err := addEsploraCounter(*c.TxCount, *m.TxCount)
+	if err != nil {
+		return AddressActivity{}, fmt.Errorf("tx_count: %w", err)
+	}
+	funded, err := addEsploraCounter(*c.FundedTxoSum, *m.FundedTxoSum)
+	if err != nil {
+		return AddressActivity{}, fmt.Errorf("funded_txo_sum: %w", err)
+	}
+	spent, err := addEsploraCounter(*c.SpentTxoSum, *m.SpentTxoSum)
+	if err != nil {
+		return AddressActivity{}, fmt.Errorf("spent_txo_sum: %w", err)
+	}
+	if spent > funded {
+		return AddressActivity{}, fmt.Errorf("spent_txo_sum %d exceeds funded_txo_sum %d", spent, funded)
+	}
+	return AddressActivity{
+		TxCount:      txCount,
+		FundedTxoSum: funded,
+		SpentTxoSum:  spent,
+		BalanceSats:  funded - spent,
+		Used:         txCount > 0 || funded > 0 || spent > 0,
+	}, nil
+}
+
+func addEsploraCounter(a, b int64) (int64, error) {
+	const maxInt64 = int64(1<<63 - 1)
+	if a < 0 || b < 0 {
+		return 0, errors.New("negative counter")
+	}
+	if a > maxInt64-b {
+		return 0, errors.New("counter overflow")
+	}
+	return a + b, nil
+}
+
+// LookupBalances is retained for callers of the original API. New code should
+// use LookupActivity so a used-but-spent address is not mistaken for an unused
+// one. Partial-failure behavior is unchanged: successful balances are kept.
+func LookupBalances(client *http.Client, endpoint string, addrs []string) (map[string]int64, error) {
+	activity, err := LookupActivity(client, endpoint, addrs)
+	balances := make(map[string]int64, len(activity))
+	for addr, a := range activity {
+		balances[addr] = a.BalanceSats
+	}
+	return balances, err
 }

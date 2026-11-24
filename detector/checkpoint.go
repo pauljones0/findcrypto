@@ -158,7 +158,7 @@ func writeCheckpointData(log io.Writer, file string, cp Checkpoint) {
 	if err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(file), ".findbtc-checkpoint-*")
+	tmp, err := os.CreateTemp(filepath.Dir(file), ".findcrypto-checkpoint-*")
 	if err != nil {
 		logLinef(log, "[checkpoint] warning: %s\n", err.Error())
 		return

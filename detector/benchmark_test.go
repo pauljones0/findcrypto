@@ -22,7 +22,7 @@ var benchDir string
 func benchFixtures(b *testing.B) string {
 	b.Helper()
 	benchOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "findbtc-bench")
+		dir, err := os.MkdirTemp("", "findcrypto-bench")
 		if err != nil {
 			panic(err)
 		}

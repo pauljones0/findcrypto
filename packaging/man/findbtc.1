@@ -21,7 +21,7 @@ progress, and the final [COMPLETE] line go to stderr, so
 .B \-json
 output stays parseable. The tool is offline by default and never
 prints key or seed material without the owner\-only
-.B \-\-reveal
+.B \-reveal
 flag.
 .SH OPTIONS
 .TP
@@ -29,7 +29,7 @@ flag.
 Inspect TARGET and print the recommended scan command with reasons (never scans, never runs anything; quoting targets POSIX sh on unix, PowerShell on Windows)
 .TP
 .B \-balance\-endpoint
-Opt\-in: query ADDRESS balances from this Esplora\-compatible base URL (only with \-watch; leaks addresses to that server)
+Opt\-in: query ADDRESS activity and balances from this Esplora\-compatible base URL (only with \-watch; leaks addresses to that server)
 .TP
 .B \-baseline
 Suppress \-walk/\-patch findings fingerprinted in baseline FILE (a reviewed hits.jsonl from an earlier sweep)
@@ -192,4 +192,4 @@ and in the repo under
 .TP
 .I /usr/share/doc/findbtc/README.md
 .SH AUTHOR
-Paul Jones <https://github.com/pauljones0/findbtc>
+Paul Jones <https://github.com/pauljones0/findcrypto>
