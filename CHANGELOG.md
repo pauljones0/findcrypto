@@ -92,6 +92,16 @@ unreleased commits when the rename began.
   installing both command names, preventing two packages from owning the same
   compatibility binary.
 
+### Fixed
+
+- The live XFS geometry oracle now disables the `exchange` and `parent`
+  defaults introduced by xfsprogs 7.2, keeping the test focused on supported
+  sector geometry rather than rejecting a newly generated incompatibility mask.
+- The password-recovery harness launches the selected Python interpreter at
+  its real path. A scratch-directory symlink could make CPython lose a venv's
+  `pyvenv.cfg`, hide the pinned BTCRecover dependencies, and falsely report no
+  recovered passwords despite a zero tool exit.
+
 ## v0.2.0
 
 The last release under the original name. See the Git history and

@@ -1581,11 +1581,13 @@ workflow files or newly enabled GitHub Actions.
 **Done:** implementation commit `1ddfb57`; release-Go and Go 1.26.11 floor
 `core` gates, Staticcheck 2026.2.2, binary govulncheck, Windows/macOS/Linux-386
 cross-builds, focused hostile-input fuzzing, deterministic corpus drift, and
-Hashcat 8.0.0's official Exodus extractor oracle all passed. The external
-`full` crack/filesystem/package harness remains available but was not claimed
-on this host because its pinned Hashcat/John and forensic/package tools are not
-installed. The tree contains no workflow files and repository Actions remain
-disabled.
+Hashcat 8.0.0's official Exodus extractor oracle all passed. On 2026-11-24 the
+external `full` harness also passed locally with its exact pins: four live
+Hashcat cracks (including Exodus mode 28200), three John cracks, two BTCRecover
+finds, all filesystem/fuzz oracles, and the package/container snapshot. That
+run exposed and fixed xfsprogs 7.2's new `exchange`/`parent` test defaults and
+a venv-breaking Python scratch symlink in the password handoff. The tree
+contains no workflow files and repository Actions remain disabled.
 
 ## Goal 49 — Structured manifests + wallet-specific adapters
 

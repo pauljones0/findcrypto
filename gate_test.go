@@ -1803,6 +1803,16 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 	if !strings.Contains(string(harness), "*.pot*|*.log*|*.rec") {
 		t.Error("harness lost its john pot isolation")
 	}
+	// A symlink to a venv's interpreter outside its bin directory makes
+	// CPython lose pyvenv.cfg and silently fall back to base site-packages.
+	// Keep the launcher contract that executes the resolved interpreter in
+	// place; the full check proves its pinned packages remain importable.
+	if !strings.Contains(string(harness), `exec "$FINDCRYPTO_HANDOFF_PYTHON" "$@"`) {
+		t.Error("harness lost its venv-preserving python3 launcher")
+	}
+	if strings.Contains(string(harness), `ln -s "$PYTHON" ./python3`) {
+		t.Error("harness must not shadow a venv interpreter with an external symlink")
+	}
 	check, err := os.ReadFile("scripts/check.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -1819,12 +1829,14 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 	// The stamp names the pinned tools: tool-versions.env is the source of
 	// truth, the doc repeats them, and the harness re-checks both.
 	pins := map[string]string{
-		"JOHN_VERSION=":        "1.9.0-jumbo-1",
-		"JOHN_SHA256=":         "8b40499a20fdd66d5f651b439bf9846367182bb93e8bff3fd39ba267576dd317",
-		"HASHCAT_VERSION=":     "8.0.0",
-		"BTCR_SHA=":            "1457088",
-		"ETH_KEYFILE_VERSION=": "0.6.0",
-		"SETUPTOOLS_VERSION=":  "80.9.0",
+		"JOHN_VERSION=":                "1.9.0-jumbo-1",
+		"JOHN_SHA256=":                 "8b40499a20fdd66d5f651b439bf9846367182bb93e8bff3fd39ba267576dd317",
+		"HASHCAT_VERSION=":             "8.0.0",
+		"HASHCAT_SHA256=":              "9fa86e1bfd5dd898d3c83aa38a67b08db1ba5d2f5252dffa2af44a8c62585f49",
+		"HASHCAT_SIGNING_FINGERPRINT=": "A70833229D040B4199CC00523C17DA8B8A16544F",
+		"BTCR_SHA=":                    "1457088",
+		"ETH_KEYFILE_VERSION=":         "0.6.0",
+		"SETUPTOOLS_VERSION=":          "80.9.0",
 	}
 	for key, want := range pins {
 		if !strings.Contains(string(pinsFile), key+want) {

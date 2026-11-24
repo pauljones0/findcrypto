@@ -29,14 +29,26 @@ additionally needs John jumbo, hashcat, the pinned BTCRecover checkout
 (`BTCR_DIR`), Staticcheck, Docker/Buildx, GoReleaser, Berkeley DB utilities,
 xfsprogs, Sleuth Kit, `dpkg-deb`, zsh, fish, and man-db:
 
+On Arch/Omarchy, the distro-provided oracle/build prerequisites are:
+
+    sudo pacman -S --needed base-devel curl db dpkg fish git gnupg man-db pocl 7zip sleuthkit xfsprogs zsh
+
+Use the signed upstream Hashcat archive and patched John build from
+`docs/PASSWORD_RECOVERY.md` when distro versions do not match the pins.
+
     scripts/check.sh core
     scripts/check.sh floor
-    mise exec -- env BTCR_DIR=/path/to/btcrecover scripts/check.sh full
+    env BTCR_DIR=/path/to/btcrecover \
+        JOHN=/path/to/john-1.9.0-jumbo-1/run/john \
+        HASHCAT=/path/to/hashcat-8.0.0/hashcat \
+        PYTHON=/path/to/btcrecover/.venv/bin/python \
+        OCL_ICD_VENDORS=pocl.icd \
+        scripts/check.sh full
     git status --short
 
 `full` refuses missing oracle tools and mismatched pins before expensive work.
 It then runs formatting, build, vet, the complete Go suite, vulnerability and
-static analysis, five fuzz targets, owner/password rehearsals, package-pin
+static analysis, eight fuzz targets, owner/password rehearsals, package-pin
 checks, and a GoReleaser archive/package/container snapshot. The final snapshot
 verifier checks every OS/architecture artifact, all checksums, package metadata
 and payloads, completion syntax, container architecture/user/entrypoint, and

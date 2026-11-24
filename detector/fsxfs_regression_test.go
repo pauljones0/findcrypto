@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -117,12 +118,24 @@ func TestXFSRealSectorGeometry(t *testing.T) {
 	}
 	f.Close()
 	args := []string{"-f", "-s", "size=4096", "-d", "agcount=3"}
-	// Newer mkfs.xfs releases enable nrext64 by default. This test is
-	// specifically about sector geometry, while OpenXFS deliberately rejects
-	// the nrext64 inode layout. Pin that optional feature off when the local
-	// mkfs supports the switch; older releases neither expose nor default it.
-	if help, _ := exec.Command(mkfs, "-i", "help").CombinedOutput(); bytes.Contains(help, []byte("nrext64")) {
-		args = append(args, "-i", "nrext64=0")
+	// Newer mkfs.xfs releases enable incompatible inode/directory features by
+	// default. This test is specifically about sector geometry, while OpenXFS
+	// deliberately rejects layouts it cannot decode. Pin optional features off
+	// when the local mkfs advertises them; older releases neither expose nor
+	// default them. xfsprogs 7.2 needs all three switches (otherwise the image
+	// carries incompat 0xcb: the supported 0xb plus exchange and parent).
+	help, _ := exec.Command(mkfs, "-i", "help").CombinedOutput()
+	var inodeOpts []string
+	for _, feature := range []string{"nrext64", "exchange"} {
+		if bytes.Contains(help, []byte(feature)) {
+			inodeOpts = append(inodeOpts, feature+"=0")
+		}
+	}
+	if len(inodeOpts) != 0 {
+		args = append(args, "-i", strings.Join(inodeOpts, ","))
+	}
+	if bytes.Contains(help, []byte("parent=")) {
+		args = append(args, "-n", "parent=0")
 	}
 	args = append(args, path)
 	if out, err := exec.Command(mkfs, args...).CombinedOutput(); err != nil {

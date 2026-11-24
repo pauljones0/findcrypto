@@ -84,10 +84,10 @@ export PATH=$WORK:$PATH
 # tools that need it (findcrypto has no exe-relative files). John's
 # CWD-relative run files are staged separately below.
 # Pin uv's interpreter selection to the ambient python3 while the
-# workdir is still empty: when $PYTHON is a uv wrapper it gets symlinked
-# below as `python3`, and any uv discovery consulting PATH would re-exec
-# that wrapper forever (observed runaway: ~950 nested uv probes). Only
-# uv reads UV_PYTHON, so plain-python runs ignore this harmlessly.
+# workdir is still empty: when $PYTHON is a uv wrapper it is exposed below
+# as `python3`, and any uv discovery consulting PATH would re-exec that
+# wrapper forever (observed runaway: ~950 nested uv probes). Only uv reads
+# UV_PYTHON, so plain-python runs ignore this harmlessly.
 if command -v python3 >/dev/null 2>&1; then
 	export UV_PYTHON
 	UV_PYTHON=$(command -v python3)
@@ -113,12 +113,15 @@ link_tool "$FINDCRYPTO" findbtc
 findcrypto -version >/dev/null
 findbtc -version >/dev/null
 link_tool "$HASHCAT" hashcat
-# The doc invokes bare `python3`: when $PYTHON is a wrapper (local uv) or
-# a versioned interpreter, it takes that name in the workdir. (Plain
-# `python3` with pip-installed deps needs no mapping.)
-if [ "$(basename "$PYTHON")" != "python3" ]; then
-	ln -s "$PYTHON" ./python3
-fi
+# The doc invokes bare `python3`, so always put a launcher with that name at
+# the front of PATH. Do not symlink a venv interpreter here: CPython discovers
+# pyvenv.cfg relative to the invoked executable, and an out-of-venv symlink
+# silently loses the venv's site-packages (the pinned eth-keyfile/wallycore
+# then appear uninstalled). Executing the resolved interpreter path preserves
+# both ordinary venvs and the supported uv-wrapper case.
+export FINDCRYPTO_HANDOFF_PYTHON=$PYTHON
+printf '%s\n' '#!/bin/sh' 'exec "$FINDCRYPTO_HANDOFF_PYTHON" "$@"' > ./python3
+chmod 0700 ./python3
 # John resolves its home from argv[0]: invoked as a bare name (as the
 # doc commands do) it takes run files AND session state from the CWD
 # (jumbo path.c path_init; there is no $JOHN override — an exported

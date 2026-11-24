@@ -34,6 +34,12 @@ older ones may lack the formats.
       sudo apt-get install hashcat pocl-opencl-icd
       hashcat --version   # must print v8.0.0 for scripts/check.sh full
 
+  The signed upstream 8.0.0 archive has SHA-256
+  `9fa86e1bfd5dd898d3c83aa38a67b08db1ba5d2f5252dffa2af44a8c62585f49`;
+  its signing-key fingerprint is
+  `A70833229D040B4199CC00523C17DA8B8A16544F`. Keep the complete extracted
+  directory: the binary needs its adjacent library, modules, and kernels.
+
   On other systems see the [hashcat homepage](https://hashcat.net)
   plus a CPU OpenCL ICD (pocl) or your GPU vendor's runtime.
 
@@ -45,9 +51,11 @@ older ones may lack the formats.
       echo '8b40499a20fdd66d5f651b439bf9846367182bb93e8bff3fd39ba267576dd317 *john.tar.gz' | sha256sum -c -
       tar xzf john.tar.gz && cd john-1.9.0-jumbo-1
       patch -p0 < /path/to/findcrypto/scripts/john-1.9.0-jumbo-1-gcc13-blake2.patch
-      cd src && ./configure && make -s -j"$(nproc)"
+      cd src && ./configure --disable-opencl && make -s -j"$(nproc)"
 
-  then run it from its `run/` directory (see Failure modes).
+  then run it from its `run/` directory (see Failure modes). The harness uses
+  John's CPU Bitcoin/Ethereum formats; disabling its optional 2019 OpenCL
+  layer also avoids build failures against current OpenCL headers.
 
 - BTCRecover from a checkout at the verified commit, with its
   Python deps (the eth-keyfile/setuptools pins matter — see
@@ -55,10 +63,12 @@ older ones may lack the formats.
 
       git clone https://github.com/3rdIteration/btcrecover && cd btcrecover
       git checkout 1457088acf17630eb12a5b53989982ac34e55f2a
-      pip install "wallycore>=1.0.0" "protobuf~=5.29.6" "pycryptodome~=3.23.0" "eth-keyfile==0.6.0" "setuptools==80.9.0"
+      uv venv --python 3.12 .venv
+      uv pip install --python .venv/bin/python "wallycore>=1.0.0" "protobuf~=5.29.6" "pycryptodome~=3.23.0" "eth-keyfile==0.6.0" "setuptools==80.9.0"
 
-  (`uv run --with ...` with the same pins works too and leaves your
-  Python alone.)
+  Give the harness `PYTHON=/path/to/btcrecover/.venv/bin/python`. A dedicated
+  Python 3.12 environment is deliberate: the verified wallycore wheel is not
+  available for the system Python 3.14 used by current Arch/Omarchy.
 
 ## 1. Get the crack material
 
@@ -302,22 +312,24 @@ can start; that is a salvage problem (§1), not a cracking problem.
 The Core/Ethereum corpus and every pre-Exodus `sh` command ran green on
 2026-09-20 with hashcat 6.2.6 via `scripts/password-handoff.sh`. On 2026-11-24
 the deterministic Exodus fixture and findcrypto export were byte-for-byte
-checked against Hashcat 8.0.0's official `tools/exodus2hashcat.py`. The harness
-now pins 8.0.0 and includes its live mode-28200 crack in the next
-`scripts/check.sh full` run; that updated full run has not yet been claimed as
-executed. Its required tool set is:
+checked against Hashcat 8.0.0's official `tools/exodus2hashcat.py`, and the
+updated `scripts/check.sh full` run passed end to end on Omarchy/Arch Linux.
+That run observed four fresh Hashcat cracks (including Exodus mode 28200),
+three fresh John cracks, both BTCRecover finds, all filesystem oracles and fuzz
+targets, and the package/container release snapshot. Its tool set was:
 
 - John the Ripper 1.9.0-jumbo-1 (CPU build from the openwall release
   tarball plus `scripts/john-1.9.0-jumbo-1-gcc13-blake2.patch`, a
-  struct-padding fix for GCC ≥ 13 that changes no hashes; full
-  banner suffix varies by CPU)
-- hashcat v8.0.0 (pocl CPU backend)
+  struct-padding fix for GCC ≥ 13 that changes no hashes, configured with
+  `--disable-opencl`; full banner suffix varies by CPU)
+- hashcat v8.0.0 (pocl 7.2 CPU backend)
 - btcrecover 1.13.0-Cryptoguide @ 1457088acf17630eb12a5b53989982ac34e55f2a
   (2026-07-17) on Python 3.12
   with eth-keyfile 0.6.0, setuptools 80.9.0 (eth-keyfile still
   imports pkg_resources, removed from setuptools ≥ 81), and the
   wallycore secp256k1 backend
-- findcrypto built from this repo at the same commit
+- findcrypto built from the same source tree
+- xfsprogs 7.2.0, Sleuth Kit 4.15.0, and Berkeley DB 6.2 filesystem oracles
 
 `scripts/password-handoff.sh` re-checks the pinned stamps on every
 run: the four tool versions above plus the eth-keyfile and setuptools
