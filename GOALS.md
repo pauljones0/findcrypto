@@ -68,7 +68,7 @@ completely solve the pain point?"**
 | 43 | Follow-up routing + exit honesty | complete | e0d0654 |
 | 44 | FAT deleted-entry long-name recovery | complete | 21f1111 |
 | 45 | Multi-volume filesystem checkpoints | complete | adba07c |
-| 46 | FindCrypto migration + recovery modernization | active | — |
+| 46 | FindCrypto migration + recovery modernization | complete | b4f6fe7 |
 
 ## Global done criteria (every goal)
 
@@ -1500,11 +1500,18 @@ prototype and several unreleased follow-ups.
 - [x] Sensitive outputs and case logs are owner-only, watch lookups are bounded
       and deterministic, invalid BIP32 children do not shorten exports, and the
       release supply chain is pinned and rehearsed.
-- [ ] Local gates, package snapshots, and the renamed remote repository are
+- [x] Local gates, package snapshots, and the renamed remote repository are
       verified from the final tree.
 
 **Verify:** `gofmt`, build, vet, full tests, static analysis, workflow lint,
 GoReleaser config and snapshot/package inspection, then remote push/CI.
+
+**Done:** implementation commit `b4f6fe7`; Go 1.27.4 build/vet/full tests,
+Staticcheck 2026.2.2, govulncheck 1.10.0, actionlint 1.7.12, and the
+GoReleaser 2.20.3 dual-command archive/package/container snapshot all passed.
+GitHub now resolves `findcrypto`, `findbtc_sandbox`, and `findbtc` to
+`pauljones0/findcrypto`; issues, discussions, topics, and dependency labels are
+enabled for the renamed project.
 
 ## Commit policy
 
