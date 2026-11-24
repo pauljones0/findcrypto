@@ -1543,6 +1543,10 @@ full Go tests, vulnerability/static analysis, packaging metadata, and a clean
 tree with no workflow YAML. Because Actions are intentionally disabled, the
 verification record is local and explicit.
 
+**Done:** implementation commit `b92e1e3`; the release and Go-floor local
+gates, Staticcheck, govulncheck, cross-builds, packaging generation, and the
+owner privacy rehearsal passed before push. Repository Actions are disabled.
+
 ## Goal 48 — Offline candidate confirmation + chain/artifact expansion
 
 **Pain to completely solve:** repaired seed candidates still expose too many
@@ -1551,21 +1555,21 @@ and later indexes cannot be checked safely, and several common chains/artifacts
 remain invisible or mislabeled.
 
 **Completely solved when:**
-- [ ] A validated public-address file filters candidates entirely offline across
+- [x] A validated public-address file filters candidates entirely offline across
       bounded named profiles; unmatched phrases stay hidden and misses are
       explicitly inconclusive.
-- [ ] A protected owner-only file supplies a BIP39 passphrase with mandatory
+- [x] A protected owner-only file supplies a BIP39 passphrase with mandatory
       Unicode NFKD normalization and no argv/environment-value surface.
-- [ ] Configurable start/count ranges cover Bitcoin standard paths, EVM,
+- [x] Configurable start/count ranges cover Bitcoin standard paths, EVM,
       Solana, Litecoin, Dogecoin, and Cosmos Hub with independent vectors and a
       total-work bound.
-- [ ] Strict ERC-2335 and Exodus SECO detectors survive boundary/noise tests;
+- [x] Strict ERC-2335 and Exodus SECO detectors survive boundary/noise tests;
       only checksum-verified Exodus containers export official Hashcat mode
       28200 material.
-- [ ] New scans call the shared encrypted JSON envelope
+- [x] New scans call the shared encrypted JSON envelope
       `browser-passworder-vault`, while reports remain compatible with saved
       `metamask-vault` hits and never invent Phantom/Solflare/Keplr attribution.
-- [ ] Owner docs, completions, man pages, corpus generation, CLI gates, full Go
+- [x] Owner docs, completions, man pages, corpus generation, CLI gates, full Go
       tests, vet/static analysis, and the official Exodus extractor oracle all
       agree with the implementation.
 
@@ -1573,6 +1577,15 @@ remain invisible or mislabeled.
 focused vectors and CLI privacy tests, full Go tests, static/vulnerability
 checks where locally available, official `exodus2hashcat.py` parity, and no
 workflow files or newly enabled GitHub Actions.
+
+**Done:** implementation commit `1ddfb57`; release-Go and Go 1.26.11 floor
+`core` gates, Staticcheck 2026.2.2, binary govulncheck, Windows/macOS/Linux-386
+cross-builds, focused hostile-input fuzzing, deterministic corpus drift, and
+Hashcat 8.0.0's official Exodus extractor oracle all passed. The external
+`full` crack/filesystem/package harness remains available but was not claimed
+on this host because its pinned Hashcat/John and forensic/package tools are not
+installed. The tree contains no workflow files and repository Actions remain
+disabled.
 
 ## Goal 49 — Structured manifests + wallet-specific adapters
 
