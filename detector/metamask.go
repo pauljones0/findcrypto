@@ -3,162 +3,263 @@ package detector
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 )
 
-// MetaMask vault detection (@metamask/browser-passworder format). A hit is a
-// JSON object — plain or JSON-escaped as in LevelDB storage — carrying
-// base64 data/iv/salt with the encryptor's exact decoded lengths (iv 16,
-// salt 32 bytes). Vaults are always encrypted, so the report flags them.
+// Browser-passworder vault detection. MetaMask is one known consumer, but
+// the envelope is not wallet-specific, so a hit is deliberately reported
+// under a generic label. A candidate is a JSON object — plain or JSON-escaped
+// as in LevelDB storage — carrying sibling data/iv/salt strings with the
+// encryptor's exact decoded lengths (iv 16, salt 32 bytes).
 //
 // Only the label and offsets leave this module; vault ciphertext is
 // password-protected secrets.
 
-// metamaskMaxSpan bounds the data/iv/salt co-occurrence window. Vault data
-// grows with the wallet; objects past this are out of scope. It must stay
-// below the block size: the overlap window cannot exceed one block.
-const metamaskMaxSpan = 2048
+// browserPassworderMaxSpan bounds the complete JSON object considered for a
+// match. Vault data grows with the wallet; objects past this are out of scope.
+// It must stay below the block size so the overlap window can hold one object.
+const (
+	browserPassworderMaxSpan = 2048
+	// Invalid, overlapping JSON-looking objects can otherwise make repeated
+	// key scans and json.Unmarshal calls consume object-size work per input
+	// byte. Real adjacent vaults consume roughly their own byte length, so this
+	// shared linear allowance is generous while hostile media stays bounded.
+	browserPassworderValidationWorkFactor = 8
+)
 
-type metamaskMatch struct {
+type browserPassworderMatch struct {
 	startAbs, endAbs int64
 }
 
-// findMetaMask returns every span where vault data/iv/salt keys co-occur
-// with valid encryptor-shaped values, in plain or escaped form.
-func findMetaMask(data []byte, baseAbs int64, first, final bool) []metamaskMatch {
-	_ = first
-	_ = final
-	var out []metamaskMatch
-	for _, escaped := range []bool{false, true} {
-		anchor := []byte(`"iv"`)
-		if escaped {
-			anchor = []byte(`\"iv\"`)
+// browserPassworderStarts is a bounded stack/deque of currently open object
+// starts. A malformed stream can open an object at every byte and never close
+// one; the fixed ring retains only starts that can still form an in-bound
+// object, without an input-sized brace index.
+type browserPassworderStarts struct {
+	values [browserPassworderMaxSpan]int
+	head   int
+	size   int
+}
+
+func (s *browserPassworderStarts) push(value int) {
+	if s.size == len(s.values) {
+		s.dropFront()
+	}
+	at := (s.head + s.size) % len(s.values)
+	s.values[at] = value
+	s.size++
+}
+
+func (s *browserPassworderStarts) back() (int, bool) {
+	if s.size == 0 {
+		return 0, false
+	}
+	return s.values[(s.head+s.size-1)%len(s.values)], true
+}
+
+func (s *browserPassworderStarts) popBack() {
+	if s.size > 0 {
+		s.size--
+	}
+}
+
+func (s *browserPassworderStarts) dropFront() {
+	if s.size == 0 {
+		return
+	}
+	s.head = (s.head + 1) % len(s.values)
+	s.size--
+}
+
+func (s *browserPassworderStarts) dropBefore(min int) {
+	for s.size > 0 && s.values[s.head] < min {
+		s.dropFront()
+	}
+}
+
+var (
+	browserPassworderPlainKeys = [][]byte{
+		[]byte(`"data"`), []byte(`"iv"`), []byte(`"salt"`),
+	}
+	browserPassworderEscapedKeys = [][]byte{
+		[]byte(`\"data\"`), []byte(`\"iv\"`), []byte(`\"salt\"`),
+	}
+)
+
+// findBrowserPassworderVaults visits each bounded, complete object candidate
+// once. One streaming lane follows ordinary JSON; the other follows JSON
+// object text escaped inside a string. Unmatched braces age out after the
+// maximum span, so dense anchors or damaged input stay linear-space and do not
+// trigger a backward search per iv occurrence.
+func findBrowserPassworderVaults(data []byte, baseAbs int64) []browserPassworderMatch {
+	var out []browserPassworderMatch
+	var plain, escaped browserPassworderStarts
+	validationBudget := int64(len(data)) * browserPassworderValidationWorkFactor
+	if validationBudget < browserPassworderMaxSpan {
+		validationBudget = browserPassworderMaxSpan
+	}
+	plainInString := false
+	plainEscape := false
+	escapedInString := false
+	escapedSlashRun := 0
+
+	emitPlain := func(end int) {
+		start, ok := plain.back()
+		if !ok {
+			return
 		}
-		for i := 0; i+len(anchor) <= len(data); {
-			j := bytes.Index(data[i:], anchor)
-			if j == -1 {
-				break
+		plain.popBack()
+		raw := data[start : end+1]
+		if int64(len(raw)) > validationBudget {
+			return
+		}
+		validationBudget -= int64(len(raw))
+		if hasAllBrowserPassworderKeys(raw, browserPassworderPlainKeys) && validBrowserPassworderJSON(raw) {
+			out = append(out, browserPassworderMatch{baseAbs + int64(start), baseAbs + int64(end+1)})
+		}
+	}
+	emitEscaped := func(end int) {
+		start, ok := escaped.back()
+		if !ok {
+			return
+		}
+		escaped.popBack()
+		raw := data[start : end+1]
+		if int64(len(raw)) > validationBudget {
+			return
+		}
+		validationBudget -= int64(len(raw))
+		if hasAllBrowserPassworderKeys(raw, browserPassworderEscapedKeys) && validEscapedBrowserPassworderJSON(raw) {
+			out = append(out, browserPassworderMatch{baseAbs + int64(start), baseAbs + int64(end+1)})
+		}
+	}
+
+	for i, c := range data {
+		// At byte i, a start below this point would make an inclusive object
+		// longer than browserPassworderMaxSpan.
+		minStart := i - browserPassworderMaxSpan + 1
+		plain.dropBefore(minStart)
+		escaped.dropBefore(minStart)
+		if plain.size == 0 {
+			plainInString = false
+			plainEscape = false
+		}
+		if escaped.size == 0 {
+			escapedInString = false
+			escapedSlashRun = 0
+		}
+
+		// Ordinary JSON lane. Quotes before the first open object are noise,
+		// so a damaged prefix cannot leave the scanner permanently in-string.
+		if plain.size == 0 {
+			if c == '{' {
+				plain.push(i)
 			}
-			a := i + j
-			if s, e, ok := metamaskSpan(data, a, len(anchor), escaped); ok {
-				out = append(out, metamaskMatch{baseAbs + int64(s), baseAbs + int64(e)})
+		} else if plainInString {
+			if plainEscape {
+				plainEscape = false
+			} else if c == '\\' {
+				plainEscape = true
+			} else if c == '"' {
+				plainInString = false
 			}
-			i = a + 1
+		} else {
+			switch c {
+			case '"':
+				plainInString = true
+			case '{':
+				plain.push(i)
+			case '}':
+				emitPlain(i)
+			}
+		}
+
+		// Escaped-JSON lane. After one outer JSON-string decode, a quote is
+		// structural when its raw backslash run is 1 mod 4; a 3-mod-4 run
+		// represents a quote escaped inside an inner JSON string.
+		if escaped.size == 0 {
+			if c == '{' && looksLikeEscapedJSONObject(data, i) {
+				escaped.push(i)
+			}
+			escapedSlashRun = 0
+			continue
+		}
+		if c == '\\' {
+			escapedSlashRun++
+			continue
+		}
+		if c == '"' && escapedSlashRun%4 == 1 {
+			escapedInString = !escapedInString
+		}
+		escapedSlashRun = 0
+		if escapedInString {
+			continue
+		}
+		switch c {
+		case '{':
+			escaped.push(i)
+		case '}':
+			emitEscaped(i)
 		}
 	}
 	return out
 }
 
-// metamaskSpan validates the iv value at the anchor and requires data and
-// salt siblings with valid shapes nearby, in the same escaping style.
-func metamaskSpan(data []byte, anchor, anchorLen int, escaped bool) (int, int, bool) {
-	ivEnd, ok := metamaskValue(data, anchor+anchorLen, escaped)
-	if !ok {
-		return 0, 0, false
+func looksLikeEscapedJSONObject(data []byte, start int) bool {
+	for at := start + 1; at < len(data) && at-start < browserPassworderMaxSpan; at++ {
+		switch data[at] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '\\':
+			return at+1 < len(data) && data[at+1] == '"'
+		default:
+			return false
+		}
 	}
-	iv, err := base64.StdEncoding.DecodeString(string(data[valueStart(data, anchor+anchorLen, escaped):ivEnd]))
+	return false
+}
+
+func hasAllBrowserPassworderKeys(raw []byte, keys [][]byte) bool {
+	for _, key := range keys {
+		if !bytes.Contains(raw, key) {
+			return false
+		}
+	}
+	return true
+}
+
+func validBrowserPassworderJSON(raw []byte) bool {
+	var object map[string]any
+	return json.Unmarshal(raw, &object) == nil && validBrowserPassworderEnvelope(object)
+}
+
+func validEscapedBrowserPassworderJSON(raw []byte) bool {
+	quoted := make([]byte, 0, len(raw)+2)
+	quoted = append(quoted, '"')
+	quoted = append(quoted, raw...)
+	quoted = append(quoted, '"')
+	var decoded string
+	if json.Unmarshal(quoted, &decoded) != nil {
+		return false
+	}
+	return validBrowserPassworderJSON([]byte(decoded))
+}
+
+func validBrowserPassworderEnvelope(object map[string]any) bool {
+	dataText, dataOK := object["data"].(string)
+	ivText, ivOK := object["iv"].(string)
+	saltText, saltOK := object["salt"].(string)
+	if !dataOK || !ivOK || !saltOK {
+		return false
+	}
+	data, err := base64.StdEncoding.DecodeString(dataText)
+	if err != nil || len(data) < 16 {
+		return false
+	}
+	iv, err := base64.StdEncoding.DecodeString(ivText)
 	if err != nil || len(iv) != 16 {
-		return 0, 0, false
+		return false
 	}
-	lo := anchor - metamaskMaxSpan
-	if lo < 0 {
-		lo = 0
-	}
-	hi := anchor + metamaskMaxSpan
-	if hi > len(data) {
-		hi = len(data)
-	}
-	start, end := anchor, ivEnd
-	for _, key := range []string{"data", "salt"} {
-		ks, ke, ok := metamaskSibling(data, lo, hi, key, escaped)
-		if !ok {
-			return 0, 0, false
-		}
-		val, err := base64.StdEncoding.DecodeString(string(data[ks:ke]))
-		if err != nil {
-			return 0, 0, false
-		}
-		if key == "salt" && len(val) != 32 {
-			return 0, 0, false
-		}
-		if key == "data" && len(val) < 16 {
-			return 0, 0, false
-		}
-		if ks < start {
-			start = ks
-		}
-		if ke > end {
-			end = ke
-		}
-	}
-	return start, end, true
-}
-
-// metamaskSibling finds key's value within [lo,hi) and returns its byte
-// range (without quotes).
-func metamaskSibling(data []byte, lo, hi int, key string, escaped bool) (int, int, bool) {
-	pattern := `"` + key + `"`
-	if escaped {
-		pattern = `\"` + key + `\"`
-	}
-	at := bytes.Index(data[lo:hi], []byte(pattern))
-	if at == -1 {
-		return 0, 0, false
-	}
-	a := lo + at
-	ve, ok := metamaskValue(data, a+len(pattern), escaped)
-	if !ok {
-		return 0, 0, false
-	}
-	return valueStart(data, a+len(pattern), escaped), ve, true
-}
-
-// metamaskValue parses ':' + optional space + quoted value at pos,
-// returning the offset just before the closing quote (escaped form allows
-// a backslash before the quotes).
-func metamaskValue(data []byte, pos int, escaped bool) (int, bool) {
-	p := skipJSONSpace(data, pos)
-	if p >= len(data) || data[p] != ':' {
-		return 0, false
-	}
-	p = skipJSONSpace(data, p+1)
-	if escaped {
-		if p >= len(data) || data[p] != '\\' {
-			return 0, false
-		}
-		p++
-	}
-	if p >= len(data) || data[p] != '"' {
-		return 0, false
-	}
-	p++
-	start := p
-	for p < len(data) {
-		if data[p] == '"' {
-			if !escaped {
-				if p-start > metamaskMaxSpan {
-					return 0, false
-				}
-				return p, true
-			}
-			if p > start && data[p-1] == '\\' {
-				if p-1-start > metamaskMaxSpan {
-					return 0, false
-				}
-				return p - 1, true // exclude the closer's backslash
-			}
-			return 0, false
-		}
-		p++
-	}
-	return 0, false
-}
-
-// valueStart replays metamaskValue's opener to locate the value's first byte.
-func valueStart(data []byte, pos int, escaped bool) int {
-	p := skipJSONSpace(data, pos) + 1 // colon
-	p = skipJSONSpace(data, p)
-	if escaped {
-		p++ // backslash
-	}
-	return p + 1 // quote
+	salt, err := base64.StdEncoding.DecodeString(saltText)
+	return err == nil && len(salt) == 32
 }

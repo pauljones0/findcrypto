@@ -25,7 +25,7 @@ func TestScanGoal6Formats(t *testing.T) {
 	put(500, electrumStandardSeed)
 	put(2000, descPK)
 	put(4000, slip39Valid20)
-	put(8000, mmOldVault)
+	put(8000, browserPassworderOldVault)
 	put(12000, electrumFileJSON)
 	put(16000, "open-chan-bucket")
 	put(17000, "channel.backup")
@@ -53,7 +53,7 @@ func TestScanGoal6Formats(t *testing.T) {
 	// electrum-file markers at 12000 sit in the same block as the vault
 	// at 8000, and the file loop runs before the vault loop.
 	want := []string{"electrum-seed", "descriptor", "slip39-20", "electrum-file",
-		"metamask-vault", "open-chan-bucket", "channel.backup", "slip39-33"}
+		"browser-passworder-vault", "open-chan-bucket", "channel.backup", "slip39-33"}
 	if !reflect.DeepEqual(needles, want) {
 		t.Fatalf("needles %v, want %v", needles, want)
 	}
@@ -73,8 +73,8 @@ func TestScanGoal6Formats(t *testing.T) {
 	if d := byNeedle["slip39-33"]; d.Offset != 20001 {
 		t.Errorf("slip39-33 at %d, want 20001", d.Offset)
 	}
-	if d := byNeedle["metamask-vault"]; d.Offset != 8011 {
-		t.Errorf("metamask-vault at %d, want 8011", d.Offset)
+	if d := byNeedle["browser-passworder-vault"]; d.Offset != 8001 {
+		t.Errorf("browser-passworder-vault at %d, want object start 8001", d.Offset)
 	}
 }
 

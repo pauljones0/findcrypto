@@ -9,6 +9,9 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Offline seed completion (Goal 32). Given a partial BIP39 phrase — 1–2
@@ -398,16 +401,24 @@ var seedAccountPaths = []struct {
 }
 
 // SeedToAccounts derives the watch-only handoff keys for a complete
-// checksum-valid mnemonic: BIP39 seed (empty passphrase) → BIP32 master
+// checksum-valid mnemonic using the BIP39 empty passphrase. It is the
+// compatibility wrapper for SeedToAccountsWithPassphrase.
+func SeedToAccounts(mnemonic []string) (*SeedAccounts, error) {
+	return SeedToAccountsWithPassphrase(mnemonic, nil)
+}
+
+// SeedToAccountsWithPassphrase derives the watch-only handoff keys for a
+// complete checksum-valid mnemonic: BIP39 seed → BIP32 master
 // → m/purpose'/0'/0' hardened, neutered to account keys. The output
 // feeds `findcrypto -watch` with no copy-paste. Invalid phrases refuse;
-// private material is zeroized before return and never logged.
-func SeedToAccounts(mnemonic []string) (*SeedAccounts, error) {
-	sentence, err := seedSentence(mnemonic)
+// the passphrase is UTF-8 NFKD-normalized per BIP39, and private material is
+// zeroized before return and never logged. The caller retains ownership of
+// passphrase; this function does not mutate it.
+func SeedToAccountsWithPassphrase(mnemonic []string, passphrase []byte) (*SeedAccounts, error) {
+	seed, err := mnemonicToSeed(mnemonic, passphrase)
 	if err != nil {
 		return nil, err
 	}
-	seed := pbkdf2SHA512([]byte(sentence), []byte("mnemonic"), 2048, 64)
 	defer zeroBytes(seed)
 	mac := hmac.New(sha512.New, []byte("Bitcoin seed"))
 	mac.Write(seed)
@@ -429,6 +440,33 @@ func SeedToAccounts(mnemonic []string) (*SeedAccounts, error) {
 		*out[i] = key
 	}
 	return accts, nil
+}
+
+// mnemonicToSeed validates the English BIP39 mnemonic and performs the BIP39
+// PBKDF2 step. BIP39 requires UTF-8 NFKD for both the mnemonic sentence and
+// the optional passphrase. Every mutable normalized/salt buffer is wiped; the
+// returned seed belongs to the caller and must also be wiped.
+func mnemonicToSeed(mnemonic []string, passphrase []byte) ([]byte, error) {
+	sentence, err := seedSentence(mnemonic)
+	if err != nil {
+		return nil, err
+	}
+	if !utf8.Valid(passphrase) {
+		return nil, errors.New("cannot derive: BIP39 passphrase is not valid UTF-8")
+	}
+	password := norm.NFKD.Bytes([]byte(sentence))
+	defer zeroBytes(password)
+	passphraseCopy := append([]byte(nil), passphrase...)
+	defer zeroBytes(passphraseCopy)
+	// norm.Bytes may return its input unchanged. Normalize a private copy so
+	// wiping the result can never mutate the caller's passphrase buffer.
+	normalizedPassphrase := norm.NFKD.Bytes(passphraseCopy)
+	defer zeroBytes(normalizedPassphrase)
+	salt := make([]byte, len("mnemonic")+len(normalizedPassphrase))
+	copy(salt, "mnemonic")
+	copy(salt[len("mnemonic"):], normalizedPassphrase)
+	defer zeroBytes(salt)
+	return pbkdf2SHA512(password, salt, 2048, 64), nil
 }
 
 // seedSentence validates a complete mnemonic (length, words, checksum)
@@ -489,17 +527,24 @@ func seedAccountKey(masterPriv, masterChain []byte, purpose, version uint32) (st
 		binary.BigEndian.PutUint32(data[33:], index)
 		mac := hmac.New(sha512.New, chain)
 		mac.Write(data[:])
+		zeroBytes(data[:])
 		I := mac.Sum(nil)
 		il := new(big.Int).SetBytes(I[:32])
 		if il.Cmp(secpN) >= 0 {
+			zeroBytes(I)
 			return "", fmt.Errorf("invalid derivation at depth %d (astronomically rare)", depth+1)
 		}
 		child := new(big.Int).Add(il, new(big.Int).SetBytes(priv))
 		child.Mod(child, secpN)
 		if child.Sign() == 0 {
+			zeroBytes(I)
 			return "", fmt.Errorf("invalid derived key at depth %d (astronomically rare)", depth+1)
 		}
-		priv = append(priv[:0], leftPad32(child.Bytes())...)
+		childRaw := child.Bytes()
+		childPadded := leftPad32(childRaw)
+		copy(priv, childPadded)
+		zeroBytes(childRaw)
+		zeroBytes(childPadded)
 		copy(chain, I[32:])
 		zeroBytes(I)
 		pub, err = secpSerializeCompressed(secpMul(new(big.Int).SetBytes(priv), secpGenerator()))
@@ -540,7 +585,9 @@ func pbkdf2SHA512(password, salt []byte, iter, keyLen int) []byte {
 		for i := 1; i < iter; i++ {
 			mac = hmac.New(sha512.New, password)
 			mac.Write(u)
-			u = mac.Sum(nil)
+			nextU := mac.Sum(nil)
+			zeroBytes(u)
+			u = nextU
 			for j := range acc {
 				acc[j] ^= u[j]
 			}

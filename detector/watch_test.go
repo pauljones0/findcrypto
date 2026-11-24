@@ -305,6 +305,26 @@ func TestCollectWatchAddrsShape(t *testing.T) {
 	}
 }
 
+func TestCollectWatchAddrsRange(t *testing.T) {
+	full, err := CollectWatchAddrs([]string{bip44MainXPub}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ranged, err := CollectWatchAddrsRange([]string{bip44MainXPub}, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranged) != 2 || ranged[0].Address != full[2].Address || ranged[1].Address != full[5].Address {
+		t.Fatalf("range = %+v, full = %+v", ranged, full)
+	}
+	if ranged[0].Index != 2 || ranged[1].Index != 2 {
+		t.Fatalf("range indexes = %d/%d, want 2/2", ranged[0].Index, ranged[1].Index)
+	}
+	if _, err := CollectWatchAddrsRange([]string{bip44MainXPub}, WatchMaxCount-1, 2); err == nil {
+		t.Fatal("range crossing maximum must fail")
+	}
+}
+
 func TestCollectWatchChainSkipsInvalidChildrenWithoutShortening(t *testing.T) {
 	acct := mustParseXPub(t, bip44MainXPub)
 	chainKey, err := DeriveChild(acct, 0)
@@ -317,7 +337,7 @@ func TestCollectWatchChainSkipsInvalidChildrenWithoutShortening(t *testing.T) {
 		}
 		return DeriveChild(parent, index)
 	}
-	entries, err := collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 3, 0, derive)
+	entries, err := collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 3, 0, uint32(WatchMaxCount), derive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,10 +353,19 @@ func TestCollectWatchChainSkipsInvalidChildrenWithoutShortening(t *testing.T) {
 
 	// An invalid final non-hardened child must fail rather than wrap into the
 	// hardened half of the index space or loop forever.
-	_, err = collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 1, 0x7fffffff,
+	_, err = collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 1, 0x7fffffff, 0x80000000,
 		func(*XPub, uint32) (*XPub, error) { return nil, errInvalidChild })
 	if err == nil || !strings.Contains(err.Error(), "exhausted non-hardened") {
 		t.Fatalf("non-hardened boundary error = %v", err)
+	}
+
+	// Recovery promises every emitted index stays below WatchMaxCount, even
+	// when BIP32 requires an invalid final child to be skipped.
+	_, err = collectWatchChain(acct, chainKey, acct.Fingerprint(), 0, 1,
+		uint32(WatchMaxCount-1), uint32(WatchMaxCount),
+		func(*XPub, uint32) (*XPub, error) { return nil, errInvalidChild })
+	if err == nil || !strings.Contains(err.Error(), "bounded child indexes") {
+		t.Fatalf("bounded recovery error = %v", err)
 	}
 }
 

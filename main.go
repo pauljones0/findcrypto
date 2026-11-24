@@ -145,8 +145,13 @@ func main() {
 	resume := flag.Bool("resume", false, "Resume from -checkpoint instead of scanning from the start")
 	reportPath := flag.String("report", "", "Summarize a -json hits file (or - for stdin) instead of scanning")
 	complete := flag.Bool("complete", false, "With -report: enumerate checksum-valid completions for partial-seed (near-miss) hits (needs --reveal; local terminal only)")
-	completeOut := flag.String("complete-out", "", "With -report -complete: write public candidate handoff (Bitcoin watch keys plus EVM/Solana addresses) to PATH (only with -complete)")
+	completeOut := flag.String("complete-out", "", "With -report -complete: write selected public candidate identities to PATH (only with -complete)")
 	completeMax := flag.Int("complete-max", detector.CompleteDefaultMax, "With -report -complete: candidates shown per hit, most-likely first (only with -complete)")
+	knownAddresses := flag.String("known-addresses", "", "With -report -complete: reveal only candidates matching public addresses in FILE, entirely offline")
+	bip39PassphraseFile := flag.String("bip39-passphrase-file", "", "With -report -complete identity derivation: read one BIP39 passphrase from protected owner-only FILE")
+	recoveryProfiles := flag.String("recovery-profiles", "", "With -report -complete identity derivation: comma-separated named profiles (default: all supported)")
+	recoveryStart := flag.Uint("recovery-start", 0, "With -report -complete identity derivation: first bounded address/account index")
+	recoveryCount := flag.Int("recovery-count", 1, "With -report -complete identity derivation: indexes per selected profile")
 	dfxmlPath := flag.String("dfxml", "", "Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning")
 	verifyLogPath := flag.String("verify-case-log", "", "Re-hash the sources behind each record in case-log FILE and report match/mismatch instead of scanning")
 	advisePath := flag.String("advise", "", "Inspect TARGET and print the recommended scan command with reasons (never scans, never runs anything; quoting targets POSIX sh on unix, PowerShell on Windows)")
@@ -206,7 +211,9 @@ func main() {
 	switch {
 	case *genCompletion != "" || *genMan:
 		mode = "generation (-gen-completion/-gen-man)"
-	case *reportPath != "" || visited["complete"] || visited["complete-out"] || visited["complete-max"]:
+	case *reportPath != "" || visited["complete"] || visited["complete-out"] || visited["complete-max"] ||
+		visited["known-addresses"] || visited["bip39-passphrase-file"] || visited["recovery-profiles"] ||
+		visited["recovery-start"] || visited["recovery-count"]:
 		mode = "-report"
 	case *dfxmlPath != "":
 		mode = "-dfxml"
@@ -274,13 +281,15 @@ func main() {
 	if *reveal {
 		fmt.Fprintln(os.Stderr, "WARNING: --reveal prints seed words to stdout. Owner recovery only: keep this output secret, never share or paste it anywhere.")
 	}
-	if *complete || *completeOut != "" || completeMaxSet {
+	recoveryFlagsSet := visited["known-addresses"] || visited["bip39-passphrase-file"] ||
+		visited["recovery-profiles"] || visited["recovery-start"] || visited["recovery-count"]
+	if *complete || *completeOut != "" || completeMaxSet || recoveryFlagsSet {
 		if *reportPath == "" {
 			fmt.Fprintln(os.Stderr, "[complete] Exiting due to error: -complete is a -report follow-up: findcrypto -report hits.jsonl -complete --reveal")
 			os.Exit(2)
 		}
 		if !*complete {
-			fmt.Fprintln(os.Stderr, "[complete] Exiting due to error: -complete-out and -complete-max need -complete")
+			fmt.Fprintln(os.Stderr, "[complete] Exiting due to error: completion identity/matching flags need -complete")
 			os.Exit(2)
 		}
 		if *jsonOut {
@@ -295,9 +304,38 @@ func main() {
 			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: -complete-max must be 1-%d\n", detector.CompleteHardMax)
 			os.Exit(2)
 		}
+		deriving := *completeOut != "" || *knownAddresses != ""
+		if !deriving && (visited["bip39-passphrase-file"] || visited["recovery-profiles"] || visited["recovery-start"] || visited["recovery-count"]) {
+			fmt.Fprintln(os.Stderr, "[complete] Exiting due to error: passphrase/profile/index flags need -known-addresses or -complete-out")
+			os.Exit(2)
+		}
+		if *recoveryCount < 1 || *recoveryCount > detector.RecoveryAddressMaxCount {
+			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: -recovery-count must be 1-%d\n", detector.RecoveryAddressMaxCount)
+			os.Exit(2)
+		}
+		if uint64(*recoveryStart) >= detector.RecoveryAddressMaxIndex ||
+			uint64(*recoveryCount) > uint64(detector.RecoveryAddressMaxIndex)-uint64(*recoveryStart) {
+			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: recovery index range must stay below %d\n", detector.RecoveryAddressMaxIndex)
+			os.Exit(2)
+		}
+		if deriving {
+			_, _, err := parseRecoveryProfiles(*recoveryProfiles)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+				os.Exit(2)
+			}
+		}
 	}
 	if *reportPath != "" {
-		runReport(*reportPath, *jsonOut, *failOnHit, *complete, *completeOut, *completeMax)
+		runReport(*reportPath, *jsonOut, *failOnHit, *complete, seedCompleteOptions{
+			OutPath:            *completeOut,
+			Max:                *completeMax,
+			KnownAddressesPath: *knownAddresses,
+			PassphrasePath:     *bip39PassphraseFile,
+			ProfileList:        *recoveryProfiles,
+			Start:              uint32(*recoveryStart),
+			Count:              *recoveryCount,
+		})
 		return
 	}
 	if *dfxmlPath != "" {
@@ -397,7 +435,7 @@ func main() {
 	}
 
 	if len(targets) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-s OFFSET] [-json] [-profile NAME] [-fail-on-hit] [-extract-dir DIR [-context BYTES]] [-checkpoint FILE [-resume]] [-unallocated-only [-fs-offset OFF]] [-case-log FILE] [-patch [-baseline FILE]] [-targets FILE] TARGET [TARGET ...] | -\n   or: %s -report hits.jsonl [-json] [-fail-on-hit] [-complete --reveal [-complete-out PATH] [-complete-max N]]\n   or: %s -hashes FILE [-json]\n   or: %s -tokenlist FILE [-tokenlist-out PATH] [-tokenlist-max N]\n   or: %s -salvage FILE [-salvage-out PATH] [-json]\n   or: %s -watch FILE [-watch-out PATH] [-watch-format csv|json] [-watch-count N] [-balance-endpoint URL]\n   or: %s -fs FILE [-fs-offset OFF] [-json] [-profile NAME] [-fail-on-hit] [-extract-dir DIR [-context BYTES]] [-checkpoint FILE [-resume]]\n   or: %s -walk DIR [-walk-follow-symlinks] [-walk-maxdepth N] [-json] [-profile NAME] [-fail-on-hit] [-baseline FILE] [-extract-dir DIR [-context BYTES]]\n   or: %s -dfxml hits.jsonl\n   or: %s -verify-case-log case.jsonl\n   or: %s -advise TARGET\n\n", os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [-s OFFSET] [-json] [-profile NAME] [-fail-on-hit] [-extract-dir DIR [-context BYTES]] [-checkpoint FILE [-resume]] [-unallocated-only [-fs-offset OFF]] [-case-log FILE] [-patch [-baseline FILE]] [-targets FILE] TARGET [TARGET ...] | -\n   or: %s -report hits.jsonl [-json] [-fail-on-hit] [-complete --reveal [-complete-out PATH] [-complete-max N] [-known-addresses FILE] [-bip39-passphrase-file FILE] [-recovery-profiles LIST] [-recovery-start N] [-recovery-count N]]\n   or: %s -hashes FILE [-json]\n   or: %s -tokenlist FILE [-tokenlist-out PATH] [-tokenlist-max N]\n   or: %s -salvage FILE [-salvage-out PATH] [-json]\n   or: %s -watch FILE [-watch-out PATH] [-watch-format csv|json] [-watch-count N] [-balance-endpoint URL]\n   or: %s -fs FILE [-fs-offset OFF] [-json] [-profile NAME] [-fail-on-hit] [-extract-dir DIR [-context BYTES]] [-checkpoint FILE [-resume]]\n   or: %s -walk DIR [-walk-follow-symlinks] [-walk-maxdepth N] [-json] [-profile NAME] [-fail-on-hit] [-baseline FILE] [-extract-dir DIR [-context BYTES]]\n   or: %s -dfxml hits.jsonl\n   or: %s -verify-case-log case.jsonl\n   or: %s -advise TARGET\n\n", os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 		flag.PrintDefaults()
 		os.Exit(2)
 	}
@@ -1056,7 +1094,7 @@ func runAdvise(path string) {
 	}
 }
 
-func runReport(path string, jsonOut bool, failOnHit, complete bool, completeOut string, completeMax int) {
+func runReport(path string, jsonOut bool, failOnHit, complete bool, completeOpts seedCompleteOptions) {
 	f := os.Stdin
 	if path != "-" {
 		var err error
@@ -1084,7 +1122,7 @@ func runReport(path string, jsonOut bool, failOnHit, complete bool, completeOut 
 		fmt.Print(rep.Text())
 	}
 	if complete {
-		runSeedComplete(dets, path, completeOut, completeMax)
+		runSeedComplete(dets, path, completeOpts)
 	}
 	gateOnHits("report", rep.Unique, failOnHit)
 }
@@ -1093,46 +1131,157 @@ func runReport(path string, jsonOut bool, failOnHit, complete bool, completeOut 
 // checksum-valid completions for partial-seed (near-miss) hits and try one
 // substituted word for all-valid, checksum-failed (unordered) hits carrying
 // --reveal words. Candidates sort most-likely first and can feed an optional
-// watch-only handoff file. Always exits 0: refusals and empty inputs are
-// completed triage answers, not failures.
-func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
-	fmt.Fprintln(os.Stderr, detector.SeedCompleteWarning())
-	var work []detector.Detection
-	nearMisses, unordered := 0, 0
+// watch-only handoff file. Ordinary completion refusals and empty inputs are
+// triage answers; unsafe files, invalid recovery settings, and derivation or
+// output failures retain their CLI error exits.
+type seedCompletionKey struct {
+	target string
+	needle string
+	offset int64
+}
+
+// seedCompletionWork mirrors report deduplication and prefers the copy that
+// carries --reveal words. Concatenating a private reveal scan with an older
+// non-reveal scan must not double the derivation bill or keep the unusable copy.
+func seedCompletionWork(dets []detector.Detection) (work []detector.Detection, nearMisses, unordered int) {
+	seen := make(map[seedCompletionKey]int)
 	for _, d := range dets {
-		switch {
-		case strings.Contains(d.Needle, "near-miss"):
-			work = append(work, d)
-			nearMisses++
-		case d.Needle == "bip39-unordered":
-			work = append(work, d)
+		if !strings.Contains(d.Needle, "near-miss") && d.Needle != "bip39-unordered" {
+			continue
+		}
+		key := seedCompletionKey{target: d.Target, needle: d.Needle, offset: d.Offset}
+		if index, ok := seen[key]; ok {
+			if len(work[index].Words) == 0 && len(d.Words) > 0 {
+				work[index] = d
+			}
+			continue
+		}
+		seen[key] = len(work)
+		work = append(work, d)
+	}
+	for _, d := range work {
+		if d.Needle == "bip39-unordered" {
 			unordered++
+		} else {
+			nearMisses++
 		}
 	}
+	return work, nearMisses, unordered
+}
+
+func (c *seedRecoveryContext) profileNames() []string {
+	profiles := append([]string(nil), c.profiles...)
+	if c.includeBitcoin {
+		profiles = append([]string{recoveryProfileBitcoin}, profiles...)
+	}
+	return profiles
+}
+
+// prepareRecoveryCompletions computes each usable result once before any
+// identity output is staged. The bound uses candidates actually shown, not the
+// caller's cap multiplied by duplicate, wordless, or refused detections.
+func prepareRecoveryCompletions(work []detector.Detection, max int, recovery *seedRecoveryContext) (
+	results []*detector.SeedCompletion, resultErrors []error, candidates int, derivationWork int64, err error,
+) {
+	results = make([]*detector.SeedCompletion, len(work))
+	resultErrors = make([]error, len(work))
+	perCandidate := int64(recovery.workPerCandidate())
+	for i, d := range work {
+		if len(d.Words) == 0 {
+			continue
+		}
+		result, resultErr := detector.CompleteSeed(d.Words, max)
+		results[i], resultErrors[i] = result, resultErr
+		if resultErr != nil {
+			continue
+		}
+		candidateWork := int64(len(result.Shown)) * perCandidate
+		if candidateWork > recoveryDerivationWorkMaximum-derivationWork {
+			return nil, nil, 0, 0, fmt.Errorf(
+				"actual candidate/profile/index work %d exceeds bounded maximum %d; lower -complete-max, -recovery-count, or profiles",
+				derivationWork+candidateWork, recoveryDerivationWorkMaximum)
+		}
+		derivationWork += candidateWork
+		candidates += len(result.Shown)
+	}
+	return results, resultErrors, candidates, derivationWork, nil
+}
+
+func runSeedComplete(dets []detector.Detection, path string, opts seedCompleteOptions) {
+	fmt.Fprintln(os.Stderr, detector.SeedCompleteWarning())
+	outPath, max := opts.OutPath, opts.Max
+	work, nearMisses, unordered := seedCompletionWork(dets)
 	if len(work) == 0 {
 		fmt.Printf("Seed completion: no partial or checksum-failed BIP39 hits to complete in %s.\n", path)
 		fmt.Println("Two usual reasons:")
-		fmt.Println("  1. The hits were scanned without --reveal, so no words are attached. Rescan the carve on your own machine: findcrypto --reveal -json CARVE > hits2.jsonl")
+		fmt.Println("  1. The hits were scanned without --reveal, so no words are attached. Rescan without saving words: findcrypto --reveal -json CARVE | findcrypto -report - -complete --reveal")
 		fmt.Println("  2. Three or more words are missing or garbled: billions of tries, beyond offline enumeration. Take the carve to BTCRecover with GPU tokenlists (see docs/WHAT_NEXT.md).")
 		return
+	}
+	if err := validateRecoveryOutputPath(outPath, path, opts.KnownAddressesPath, opts.PassphrasePath); err != nil {
+		fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+		os.Exit(1)
+	}
+	var recovery *seedRecoveryContext
+	var preparedResults []*detector.SeedCompletion
+	var preparedErrors []error
+	if outPath != "" || opts.KnownAddressesPath != "" {
+		var err error
+		recovery, err = opts.loadRecoveryContext()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+			os.Exit(1)
+		}
+		defer recovery.close()
+		var preparedCandidates int
+		var derivationWork int64
+		preparedResults, preparedErrors, preparedCandidates, derivationWork, err = prepareRecoveryCompletions(work, max, recovery)
+		if err != nil {
+			recovery.close()
+			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+			os.Exit(2)
+		}
+		passphraseMode := "empty"
+		if opts.PassphrasePath != "" {
+			passphraseMode = "protected-file"
+			fmt.Fprintln(os.Stderr, "[complete] BIP39 passphrase supplied from a protected file; its value will never be printed, logged, or written.")
+		}
+		fmt.Fprintf(os.Stderr, "[complete] Recovery search: profiles=%s start=%d count=%d passphrase=%s candidates=%d derivation-work=%d/%d.\n",
+			strings.Join(recovery.profileNames(), ","), recovery.start, recovery.count, passphraseMode,
+			preparedCandidates, derivationWork, recoveryDerivationWorkMaximum)
+		if recovery.known != nil {
+			fmt.Fprintln(os.Stderr, "[complete] Offline known-address matching enabled; unmatched candidate phrases will stay hidden.")
+		}
 	}
 	var out *sensitiveOutput
 	if outPath != "" {
 		var err error
 		out, err = newSensitiveOutput(outPath)
 		if err != nil {
+			recovery.close()
 			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
 		defer out.Abort()
-		fmt.Fprintln(out, "# findcrypto -complete handoff: 3 Bitcoin watch-only account keys plus public EVM/Solana recovery addresses per candidate.")
+		fmt.Fprintf(out, "# findcrypto -complete public identity handoff: profiles=%s start=%d count=%d.\n", strings.Join(recovery.profileNames(), ","), recovery.start, recovery.count)
 		fmt.Fprintln(out, "# Candidate numbers match the terminal listing above; phrases and private keys never land in this file.")
-		fmt.Fprintln(out, "# Derivation assumes an empty BIP39 passphrase; a non-empty passphrase produces different keys and addresses.")
+		if opts.PassphrasePath == "" {
+			fmt.Fprintln(out, "# Derivation assumes an empty BIP39 passphrase; a non-empty passphrase produces different keys and addresses.")
+		} else {
+			fmt.Fprintln(out, "# A BIP39 passphrase was supplied from a protected file; its value is never written here.")
+		}
+		if recovery.known != nil {
+			fmt.Fprintln(out, "# Known-address mode: only positively matched candidate blocks are written.")
+		}
 	}
 	wordless := 0
 	completed := 0
 	totalKeys := 0
 	totalAddresses := 0
+	matchedCandidates := 0
+	matchedAddresses := 0
+	checkedCandidates := 0
+	checkedAddresses := 0
 	fmt.Printf("Seed completion (offline; %d candidate hits in %s: %d near-miss, %d all-valid checksum-failed runs):\n",
 		len(work), path, nearMisses, unordered)
 	for i, d := range work {
@@ -1142,7 +1291,13 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 			wordless++
 			continue
 		}
-		res, err := detector.CompleteSeed(d.Words, max)
+		var res *detector.SeedCompletion
+		var err error
+		if recovery != nil {
+			res, err = preparedResults[i], preparedErrors[i]
+		} else {
+			res, err = detector.CompleteSeed(d.Words, max)
+		}
 		if err != nil {
 			fmt.Printf("%s REFUSED: %s\n", tag, err.Error())
 			if d.Needle == "bip39-unordered" {
@@ -1157,11 +1312,13 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 		} else {
 			fmt.Printf("%s gaps=%v\n", tag, res.Partial.Gaps)
 		}
-		for _, c := range res.Corrections {
-			fmt.Printf("  did you mean %q at position %d? (gap was %q; checksum-valid)\n",
-				c.Suggest[0], c.Position, c.Token)
-			for _, alt := range c.Suggest[1:] {
-				fmt.Printf("  ... or %q at position %d? (checksum-valid)\n", alt, c.Position)
+		if recovery == nil || recovery.known == nil {
+			for _, c := range res.Corrections {
+				fmt.Printf("  did you mean %q at position %d? (gap was %q; checksum-valid)\n",
+					c.Suggest[0], c.Position, c.Token)
+				for _, alt := range c.Suggest[1:] {
+					fmt.Printf("  ... or %q at position %d? (checksum-valid)\n", alt, c.Position)
+				}
 			}
 		}
 		showing := "showing all"
@@ -1170,29 +1327,46 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 		}
 		fmt.Printf("  %d checksum-valid completions (%s):\n", res.Total, showing)
 		for k, s := range res.Shown {
+			var derived *candidateRecovery
+			var matches []detector.RecoveryAddress
+			if recovery != nil {
+				var err error
+				derived, err = recovery.derive(s.Words)
+				if err != nil {
+					if out != nil {
+						out.Abort()
+					}
+					recovery.close()
+					fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
+					os.Exit(1)
+				}
+				checkedCandidates++
+				checkedAddresses += len(derived.addresses)
+				matches = recovery.matches(derived.addresses)
+				if recovery.known != nil && len(matches) == 0 {
+					continue
+				}
+			}
+			if recovery != nil && recovery.known != nil {
+				matchedCandidates++
+				matchedAddresses += len(matches)
+				for _, match := range matches {
+					fmt.Printf("  MATCH hit=%d candidate=%d chain=%s profile=%s path=%s address=%s\n", i+1, k+1, match.Chain, match.Profile, match.Path, match.Address)
+				}
+			}
 			fmt.Printf("  candidate %d: %s\n", k+1, strings.Join(s.Words, " "))
 			if out != nil {
-				accts, err := detector.SeedToAccounts(s.Words)
-				if err != nil {
-					out.Abort()
-					fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
-					os.Exit(1)
-				}
 				fmt.Fprintf(out, "# candidate %d (hit %d %s @%d)\n", k+1, i+1, d.Needle, d.Offset)
-				fmt.Fprintln(out, accts.XPub44)
-				fmt.Fprintln(out, accts.YPub49)
-				fmt.Fprintln(out, accts.ZPub84)
-				addresses, err := detector.SeedToRecoveryAddresses(s.Words, 1)
-				if err != nil {
-					out.Abort()
-					fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
-					os.Exit(1)
+				if derived.accounts != nil {
+					fmt.Fprintln(out, derived.accounts.XPub44)
+					fmt.Fprintln(out, derived.accounts.YPub49)
+					fmt.Fprintln(out, derived.accounts.ZPub84)
+					totalKeys += 3
 				}
-				for _, address := range addresses {
-					fmt.Fprintf(out, "# recovery-address chain=%s path=%s address=%s\n", address.Chain, address.Path, address.Address)
+				for _, address := range derived.addresses {
+					fmt.Fprintf(out, "# recovery-address chain=%s path=%s address=%s profile=%s\n", address.Chain, address.Path, address.Address, address.Profile)
 					totalAddresses++
 				}
-				totalKeys += 3
 			}
 		}
 		if res.Truncated {
@@ -1203,15 +1377,29 @@ func runSeedComplete(dets []detector.Detection, path, outPath string, max int) {
 	if wordless > 0 {
 		fmt.Printf("%d of %d candidate hits carry no words: rescan with --reveal on your own machine, then re-run -complete.\n", wordless, len(work))
 	}
+	if recovery != nil && recovery.known != nil {
+		if checkedCandidates == 0 {
+			fmt.Println("Known-address match: no candidate was checked because every completion hit was wordless or refused. Rescan with --reveal and pipe directly into -report -; no negative conclusion is possible.")
+		} else if matchedCandidates == 0 {
+			fmt.Printf("Known-address match: checked %d candidate(s) and %d derived public address(es); no candidate matched the selected bounded profiles and indexes. This is inconclusive: a different passphrase, index, profile, or wallet-specific derivation may produce different addresses.\n", checkedCandidates, checkedAddresses)
+		} else {
+			fmt.Printf("Known-address match: checked %d candidate(s) and %d derived public address(es); %d candidate(s) matched %d address(es), entirely offline.\n", checkedCandidates, checkedAddresses, matchedCandidates, matchedAddresses)
+		}
+	}
 	if out != nil {
 		if err := out.Commit(); err != nil {
+			recovery.close()
 			fmt.Fprintf(os.Stderr, "[complete] Exiting due to error: %s\n", err.Error())
 			os.Exit(1)
 		}
-		fmt.Printf("Wrote %d Bitcoin watch-only account keys and %d public recovery addresses to %s (EVM m/44'/60'/0'/0/0 and Solana m/44'/501'/0'/0').\n", totalKeys, totalAddresses, outPath)
-		fmt.Printf("Next: findcrypto -watch %s -watch-out addrs.csv derives the Bitcoin gap window. The comment-only EVM/Solana addresses can be compared with old account records without exposing a phrase; see docs/CHAIN_SUPPORT.md. These identities assume an empty BIP39 passphrase. Match any candidate with address history (even a zero current balance) back to the phrase above and restore it in wallet software, offline.\n", outPath)
+		fmt.Printf("Wrote %d Bitcoin watch-only account keys and %d bounded public recovery addresses to %s.\n", totalKeys, totalAddresses, outPath)
+		if totalKeys > 0 {
+			fmt.Printf("Next: findcrypto -watch %s -watch-out addrs.csv derives the Bitcoin gap window; comment-only recovery addresses are ignored by -watch.\n", outPath)
+		}
 	} else if completed > 0 {
-		fmt.Println("Next: re-run with -complete-out keys.txt to derive Bitcoin watch-only keys plus EVM/Solana public recovery addresses, then use -watch for the Bitcoin gap window.")
+		if recovery == nil {
+			fmt.Println("Next: re-run with -known-addresses public.txt to match candidates offline, or -complete-out identities.txt to write bounded public identities.")
+		}
 	}
 	fmt.Println("Evidence rule: transaction history on a checked address/path strongly confirms a candidate, even when its current balance is zero. No history is inconclusive: a non-empty BIP39 passphrase, later index, or wallet-specific path may produce different addresses. See docs/CHAIN_SUPPORT.md and docs/WHAT_NEXT.md before ruling a candidate out.")
 }
@@ -1282,7 +1470,7 @@ func runHashes(path string, jsonOut bool) {
 		return
 	}
 	if len(hashes) == 0 {
-		fmt.Printf("No crack material found in %s (need an mkey record or a complete keystore object).\n", path)
+		fmt.Printf("No crack material found in %s (need an mkey record or a complete supported encrypted-wallet artifact).\n", path)
 		return
 	}
 	hashWord := "hashes"
@@ -1293,7 +1481,7 @@ func runHashes(path string, jsonOut bool) {
 	for _, h := range hashes {
 		fmt.Printf("[%s @%d] kdf=%s iters=%d\n%s\n", h.Format, h.Offset, h.KDF, h.Iterations, h.Hash)
 	}
-	fmt.Println("Next: save the $...$ lines above to hashes.txt, then:")
+	fmt.Println("Next: split the hash lines above into one file per listed format/mode (mixed-mode files are rejected), then:")
 	for _, cmd := range hashCommands(hashes) {
 		fmt.Printf("  %s\n", cmd)
 	}
@@ -1459,13 +1647,15 @@ func hashCommands(hashes []detector.CrackHash) []string {
 	for _, h := range hashes {
 		switch h.Format {
 		case "bitcoin-core-mkey":
-			add("core", "hashcat -m 11300 hashes.txt passwords.txt")
+			add("core", "hashcat -m 11300 hashes-core.txt passwords.txt")
 		case "ethereum-keystore":
 			if h.KDF == "scrypt" {
-				add("eth-s", "hashcat -m 15700 hashes.txt passwords.txt")
+				add("eth-s", "hashcat -m 15700 hashes-eth-scrypt.txt passwords.txt")
 			} else {
-				add("eth-p", "hashcat -m 15600 hashes.txt passwords.txt")
+				add("eth-p", "hashcat -m 15600 hashes-eth-pbkdf2.txt passwords.txt")
 			}
+		case "exodus-seco":
+			add("exodus", "hashcat -m 28200 hashes-exodus.txt passwords.txt")
 		}
 	}
 	return cmds

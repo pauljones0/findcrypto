@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/pauljones0/findbtc/blob/master/schema/hits-v1.json",
-  "title": "findbtc hits.jsonl line (v1)",
-  "description": "One JSONL line of `findbtc -json` output: a single Detection. The same schema covers the raw, filesystem-guided (-fs), and owner-reveal (--reveal) variants; variant-only fields are optional and documented per property. Within v1 only additive, backwards-compatible changes are allowed (new optional properties, new enum values); any removal, rename, or type change requires a new schema version. See docs/HITS_SCHEMA.md.",
+  "title": "findcrypto hits.jsonl line (v1)",
+  "description": "One JSONL line of `findcrypto -json` output: a single Detection. The same schema covers the raw, filesystem-guided (-fs), and owner-reveal (--reveal) variants; variant-only fields are optional and documented per property. Within v1 only additive, backwards-compatible changes are allowed (new optional properties, new enum values); any removal, rename, or type change requires a new schema version. See docs/HITS_SCHEMA.md.",
   "type": "object",
   "required": ["description", "needle", "offset", "target", "block_offset", "match_length"],
   "additionalProperties": false,
@@ -44,7 +44,7 @@
     },
     "hashes": {
       "type": "array",
-      "description": "Crack-ready password material extracted from the carve; present only when carving found usable mkey or keystore records.",
+      "description": "Crack-ready password material extracted from the carve; present only when carving found a supported encrypted-wallet record.",
       "items": { "$ref": "#/$defs/crackHash" }
     },
     "words": {
@@ -114,12 +114,12 @@
       "properties": {
         "format": {
           "type": "string",
-          "enum": ["bitcoin-core-mkey", "ethereum-keystore"],
+          "enum": ["bitcoin-core-mkey", "ethereum-keystore", "exodus-seco"],
           "description": "Cracker input format."
         },
         "hash": {
           "type": "string",
-          "description": "Cracker input string ($bitcoin$...); empty when only structured params are available."
+          "description": "Cracker input string (for example $bitcoin$... or EXODUS:...); empty when only structured params are available."
         },
         "kdf": {
           "type": "string",
@@ -141,7 +141,7 @@
         },
         "params": {
           "type": "object",
-          "description": "Fuller KDF parameter set (keystores).",
+          "description": "Fuller KDF/cipher parameter set for encrypted-wallet artifacts.",
           "additionalProperties": { "type": "string" }
         },
         "offset": {

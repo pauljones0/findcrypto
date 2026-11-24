@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -261,6 +262,30 @@ func TestHitsSchemaLiveScans(t *testing.T) {
 	v.validateDetections(t, scanFixture(t, "./testdata/test_wallet.dat.zip"))
 }
 
+func TestHitsSchemaLiveExodusCarve(t *testing.T) {
+	v := loadHitsSchema(t)
+	recorder := &detectionRecorder{}
+	path := filepath.Join("..", "testdata", "password-handoff", "seed.seco")
+	if err := detector.ScanWithOptions(0, path, detector.Options{
+		CarveDir:          t.TempDir(),
+		CarveContextBytes: 1024,
+	}, recorder.OnDetection, recorder.OnProgress); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range recorder.detections {
+		for _, hash := range d.Hashes {
+			if hash.Format == "exodus-seco" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("live Exodus carve carried no Exodus CrackHash: %+v", recorder.detections)
+	}
+	v.validateDetections(t, recorder.detections)
+}
+
 // TestHitsSchemaVariants covers one schema over all output variants: raw,
 // carve (+hashes, +salvage), filesystem-guided (file_name), and
 // owner-reveal (words). Each variant must validate.
@@ -291,6 +316,12 @@ func TestHitsSchemaVariants(t *testing.T) {
 			Format: "ethereum-keystore", KDF: "scrypt",
 			Params: map[string]string{"n": "262144", "r": "8", "p": "1", "cipher": "aes-128-ctr"},
 			Offset: 8192,
+		},
+		{
+			Format: "exodus-seco", Hash: "EXODUS:16384:8:1:c2FsdA==:aXY=:ZW5jcnlwdGVk:aW50ZWdyaXR5",
+			KDF: "scrypt", Iterations: 16384, SaltHex: "73616c74",
+			Params: map[string]string{"n": "16384", "r": "8", "p": "1", "cipher": "aes-256-gcm", "hashcat_mode": "28200"},
+			Offset: 12288,
 		},
 	}
 	fs := base

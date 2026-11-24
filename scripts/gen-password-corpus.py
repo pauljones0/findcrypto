@@ -8,8 +8,10 @@ Outputs land in testdata/password-handoff/:
                         password RiverStone2019 (3 hit-context tokens)
   eth-scrypt.json       generated Web3 keystore, scrypt N=262144/r=8/p=1
                         (geth defaults: real-world cost), password tide-harbor-42
+  seed.seco             generated Exodus secure-container, scrypt
+                        N=16384/r=8/p=1, password desert-orbit-77
   wallet-context.bin    fake carve: owner notes holding the password parts
-                        (lowercase river/stone so findbtc mutations are
+                        (lowercase river/stone so findcrypto mutations are
                         required) plus distractor words
   passwords.txt         tiny crack list holding every corpus password
 
@@ -52,9 +54,11 @@ PBKDF2_PASSWORD = "RiverStone2019"   # tokens: River + Stone + 2019
 PBKDF2_ITERS = 4096                  # tiny KDF: harness-crackable, still real PBKDF2
 SCRYPT_PASSWORD = "tide-harbor-42"
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 262144, 8, 1  # geth defaults: real-world cost
+EXODUS_PASSWORD = "desert-orbit-77"
+EXODUS_N, EXODUS_R, EXODUS_P = 16384, 8, 1
 
 # Owner-notes prose. river/stone appear lowercase only, so the Capitalized
-# mutation in findbtc -tokenlist is load-bearing: without it no BTCRecover
+# mutation in findcrypto -tokenlist is load-bearing: without it no BTCRecover
 # combination can rebuild RiverStone2019. 2019 appears verbatim. Ten words
 # here plus the "hint" wrapper word keep the --max-tokens 3 search near
 # 23k guesses (~1 min); every added line multiplies combinations, which
@@ -67,6 +71,7 @@ PASSWORDS_TXT = "\n".join([
     "btcr-test-password",   # both core mkey records
     PBKDF2_PASSWORD,        # eth-pbkdf2.json (also the tokenlist target)
     SCRYPT_PASSWORD,        # eth-scrypt.json
+    EXODUS_PASSWORD,        # seed.seco
     "wrong-password-two",
 ]) + "\n"
 
@@ -110,6 +115,53 @@ def make_keystore(password, kdf, kdfparams, rng):
     }
 
 
+def make_exodus_seco(password, rng):
+    """Build the documented secure-container v0 layout deterministically."""
+    from Crypto.Cipher import AES
+
+    def random_bytes(n):
+        return bytes(rng.randrange(256) for _ in range(n))
+
+    salt = random_bytes(32)
+    wrapping_iv = random_bytes(12)
+    blob_key = random_bytes(32)
+    stretched = hashlib.scrypt(
+        password.encode(), salt=salt, n=EXODUS_N, r=EXODUS_R,
+        p=EXODUS_P, dklen=32, maxmem=64 << 20)
+    wrapping = AES.new(stretched, AES.MODE_GCM, nonce=wrapping_iv)
+    encrypted_key, wrapping_tag = wrapping.encrypt_and_digest(blob_key)
+
+    blob_iv = random_bytes(12)
+    payload = b'{"seed":"public deterministic test fixture; no funds"}'
+    blob_cipher = AES.new(blob_key, AES.MODE_GCM, nonce=blob_iv)
+    blob, blob_tag = blob_cipher.encrypt_and_digest(payload)
+
+    header = bytearray(224)
+    header[0:4] = b"SECO"
+    pos = 12  # version=0 and reserved=0 are already zero-filled.
+    for value in (b"seco-v0-scrypt-aes", b"Exodus", b"26.11.0-test"):
+        header[pos] = len(value)
+        pos += 1
+        header[pos:pos + len(value)] = value
+        pos += len(value)
+
+    metadata = bytearray(256)
+    metadata[0:32] = salt
+    metadata[32:36] = EXODUS_N.to_bytes(4, "big")
+    metadata[36:40] = EXODUS_R.to_bytes(4, "big")
+    metadata[40:44] = EXODUS_P.to_bytes(4, "big")
+    metadata[44:44 + len(b"aes-256-gcm")] = b"aes-256-gcm"
+    metadata[76:88] = wrapping_iv
+    metadata[88:104] = wrapping_tag
+    metadata[104:136] = encrypted_key
+    metadata[136:148] = blob_iv
+    metadata[148:164] = blob_tag
+
+    length = len(blob).to_bytes(4, "big")
+    checksum = hashlib.sha256(metadata + length + blob).digest()
+    return bytes(header) + checksum + bytes(metadata) + length + blob
+
+
 def build(out_dir):
     rng = random.Random(SEED)
     os.makedirs(out_dir, exist_ok=True)
@@ -124,6 +176,7 @@ def build(out_dir):
         SCRYPT_PASSWORD, "scrypt",
         {"dklen": 32, "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P}, rng),
         indent=2) + "\n").encode()
+    files["seed.seco"] = make_exodus_seco(EXODUS_PASSWORD, rng)
     # A carve-like blob: binary padding around owner notes, so the
     # tokenlist generator must pick words out of binary context like the
     # real thing. The wrapper adds exactly one word ("hint").

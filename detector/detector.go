@@ -73,7 +73,7 @@ func trimEdgeFragments(data []byte, first, final bool, isWordChar func(byte) boo
 // including the widest seed phrase, keystore, and Goal 6 format spans.
 func scanOverlap() int {
 	max := bip39MaxSpan + 1
-	for _, span := range []int{keystoreMaxSpan, electrumMaxSpan, electrumFileMaxSpan, descriptorMaxSpan, slip39MaxSpan, metamaskMaxSpan, solanaKeypairMaxSpan, secretsMaxSpan} {
+	for _, span := range []int{keystoreMaxSpan, erc2335MaxSpan, exodusPrefixSpan, electrumMaxSpan, electrumFileMaxSpan, descriptorMaxSpan, slip39MaxSpan, browserPassworderMaxSpan, solanaKeypairMaxSpan, secretsMaxSpan} {
 		if span+1 > max {
 			max = span + 1
 		}
@@ -112,7 +112,7 @@ type Detection struct {
 	// Carve classifies the carved bytes; set only when carving succeeded.
 	Carve *CarveInfo `json:"carve,omitempty"`
 	// Hashes holds crack-ready password material extracted from the carve;
-	// set only when carving found usable mkey or keystore records.
+	// set only when carving found a supported crack-ready wallet record.
 	Hashes []CrackHash `json:"hashes,omitempty"`
 	// Words holds seed-phrase words for BIP39 hits; set only with Reveal
 	// (--reveal), otherwise words never leave the detector.
@@ -2796,6 +2796,49 @@ func detectWallets(ctx context.Context, in chan *Block, out chan *Block, onDetec
 				onDetection(d)
 			}
 		}
+		// ERC-2335 BLS12-381 keystores use a different modular v4 schema
+		// from Web3 Secret Storage. Keep their label distinct: they are
+		// encrypted artifacts, but no cracker export is currently emitted.
+		for _, m := range findERC2335Keystores(data, block.offset) {
+			if m.endAbs > block.offset+int64(block.overlap) {
+				d := Detection{
+					Description: fmt.Sprintf("Found 'erc2335-keystore' at %s", block.location),
+					Needle:      "erc2335-keystore",
+					Offset:      m.startAbs,
+					Target:      block.source.Describe(),
+					BlockOffset: block.offset + int64(block.overlap),
+					MatchLen:    int(m.endAbs - m.startAbs),
+				}
+				if carve.dir != "" {
+					seq++
+					if err := carveDetection(block.source, &d, carve.dir, carve.contextBytes, seq, opts.logWriter()); err != nil {
+						opts.logf("[carve] warning: could not carve 'erc2335-keystore' at %s byte %d: %s\n",
+							d.Target, d.Offset, err.Error())
+					}
+				}
+				onDetection(d)
+			}
+		}
+		for _, m := range findExodusSECO(data, block.offset) {
+			if m.endAbs > block.offset+int64(block.overlap) {
+				d := Detection{
+					Description: fmt.Sprintf("Found 'exodus-seco' at %s", block.location),
+					Needle:      "exodus-seco",
+					Offset:      m.startAbs,
+					Target:      block.source.Describe(),
+					BlockOffset: block.offset + int64(block.overlap),
+					MatchLen:    int(m.endAbs - m.startAbs),
+				}
+				if carve.dir != "" {
+					seq++
+					if err := carveDetection(block.source, &d, carve.dir, carve.contextBytes, seq, opts.logWriter()); err != nil {
+						opts.logf("[carve] warning: could not carve 'exodus-seco' at %s byte %d: %s\n",
+							d.Target, d.Offset, err.Error())
+					}
+				}
+				onDetection(d)
+			}
+		}
 		// Goal 6 formats share the reporting rule and the privacy
 		// discipline: type labels only, never key or seed material
 		// (words ride along only with --reveal, like BIP39).
@@ -2909,11 +2952,11 @@ func detectWallets(ctx context.Context, in chan *Block, out chan *Block, onDetec
 				onDetection(d)
 			}
 		}
-		for _, m := range findMetaMask(data, block.offset, block.overlap == 0, block.final) {
+		for _, m := range findBrowserPassworderVaults(data, block.offset) {
 			if m.endAbs > block.offset+int64(block.overlap) {
 				d := Detection{
-					Description: fmt.Sprintf("Found 'metamask-vault' at %s", block.location),
-					Needle:      "metamask-vault",
+					Description: fmt.Sprintf("Found 'browser-passworder-vault' at %s", block.location),
+					Needle:      "browser-passworder-vault",
 					Offset:      m.startAbs,
 					Target:      block.source.Describe(),
 					BlockOffset: block.offset + int64(block.overlap),
@@ -2922,7 +2965,7 @@ func detectWallets(ctx context.Context, in chan *Block, out chan *Block, onDetec
 				if carve.dir != "" {
 					seq++
 					if err := carveDetection(block.source, &d, carve.dir, carve.contextBytes, seq, opts.logWriter()); err != nil {
-						opts.logf("[carve] warning: could not carve 'metamask-vault' at %s byte %d: %s\n",
+						opts.logf("[carve] warning: could not carve 'browser-passworder-vault' at %s byte %d: %s\n",
 							d.Target, d.Offset, err.Error())
 					}
 				}

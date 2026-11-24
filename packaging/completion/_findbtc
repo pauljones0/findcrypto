@@ -4,11 +4,12 @@ _arguments -s -S \
   '-advise[Inspect TARGET and print the recommended scan command with reasons (never scans, never runs anything; quoting targets POSIX sh on unix, PowerShell on Windows)]:value:_files' \
   '-balance-endpoint[Opt-in: query ADDRESS activity and balances from this Esplora-compatible base URL (only with -watch; leaks addresses to that server)]:value:_files' \
   '-baseline[Suppress -walk/-patch findings fingerprinted in baseline FILE (a reviewed hits.jsonl from an earlier sweep)]:value:_files' \
+  '-bip39-passphrase-file[With -report -complete identity derivation: read one BIP39 passphrase from protected owner-only FILE]:value:_files' \
   '-case-log[Append a JSON case-log record per scan to FILE (source identity, streaming hashes, skipped ranges, counts)]:value:_files' \
   '-checkpoint[Journal scan progress to FILE every 1MB for crash recovery]:value:_files' \
   '-complete[With -report: enumerate checksum-valid completions for partial-seed (near-miss) hits (needs --reveal; local terminal only)]' \
   '-complete-max[With -report -complete: candidates shown per hit, most-likely first (only with -complete)]:value:_files' \
-  '-complete-out[With -report -complete: write public candidate handoff (Bitcoin watch keys plus EVM/Solana addresses) to PATH (only with -complete)]:value:_files' \
+  '-complete-out[With -report -complete: write selected public candidate identities to PATH (only with -complete)]:value:_files' \
   '-context[Bytes carved before and after each hit (only with -extract-dir)]:value:_files' \
   '-dfxml[Convert a -json hits file (or - for stdin) to DFXML on stdout instead of scanning]:value:_files' \
   '-extract-dir[Carve bytes around each hit into DIR/hit-NNNNNN.bin plus a .json sidecar (never on the scanned device itself)]:value:_files' \
@@ -19,8 +20,12 @@ _arguments -s -S \
   '-gen-man[Write the findbtc man page (troff) to stdout and exit (OPTIONS generated from the flag table; scan inputs still refuse)]' \
   '-hashes[Extract crack-ready password hashes from FILE (or - for stdin) instead of scanning]:value:_files' \
   '-json[Print detections as JSON lines instead of human text]' \
+  '-known-addresses[With -report -complete: reveal only candidates matching public addresses in FILE, entirely offline]:value:_files' \
   '-patch[Parse input as a patch series (git log -p): attribute hits to commit+path with history fingerprints for -baseline]' \
   '-profile[Detector set: empty (wallet matchers) or secrets (adds private-key blocks and credential shapes; see docs/SECRETS_PROFILE.md)]:value:_files' \
+  '-recovery-count[With -report -complete identity derivation: indexes per selected profile]:value:_files' \
+  '-recovery-profiles[With -report -complete identity derivation: comma-separated named profiles (default: all supported)]:value:_files' \
+  '-recovery-start[With -report -complete identity derivation: first bounded address/account index]:value:_files' \
   '-report[Summarize a -json hits file (or - for stdin) instead of scanning]:value:_files' \
   '-resume[Resume from -checkpoint instead of scanning from the start]' \
   '-reveal[Print seed words for BIP39 hits (owner recovery only; NEVER share this output)]' \

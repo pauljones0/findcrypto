@@ -16,7 +16,9 @@ contracts:
 | Decide candidates by a positive current balance | Watch-only Esplora results now retain transaction count, lifetime funded/spent totals, balance, and `used`. A real but fully spent wallet is not discarded. |
 | Try a configurable address gap | `-watch-count` already provides bounded local derivation, defaulting to the standard 20-address gap and allowing an explicit increase. |
 | Resume a large search | Existing content-bound checkpoint/resume is stronger: journals are atomic, identity-gated, and tested across crashes and nested archive congestion. Plain mnemonic progress files are not adopted. |
-| Derive several chain-specific paths | Bitcoin BIP44/49/84 watch-only handoff remains implemented. Recovered candidates now also derive independently verified EVM `m/44'/60'/0'/0/i` and Solana `m/44'/501'/i'/0'` public addresses offline. The next step is offline known-address matching, not automatic disclosure to a public provider. |
+| Derive several chain-specific paths | Named, bounded profiles now cover Bitcoin BIP44/49/84 external/change, EVM, Solana, Litecoin, Dogecoin, and Cosmos Hub. Paths and indexes are explicit in every public result; arbitrary path execution is not exposed. |
+| Match candidates to an Ethereum account | `-known-addresses` validates a public address file and compares every shown completion against selected profiles/indexes entirely offline. Unmatched phrases stay hidden, and a no-match is explicitly inconclusive instead of being treated as proof. |
+| Support mnemonic passphrases | On Unix, `-bip39-passphrase-file` accepts one non-empty owner-only regular file, applies BIP39 Unicode NFKD normalization, and never accepts the value in argv or an environment variable. Windows fails closed until an owner-only DACL can be verified. The caller-owned bytes are not modified and temporary byte buffers are wiped where Go permits. |
 
 Two-word substitution where both damaged tokens are still valid dictionary words
 is intentionally left to BTCRecover: the naive search is hundreds of millions
@@ -26,5 +28,12 @@ gaps, while BTCRecover owns large permutation and token searches.
 This is a clean-room behavior integration. The prototype has no declared license
 in its repository, providing another reason not to transplant its source.
 
+The wallet-artifact expansion follows the same evidence rule. Generic
+browser-passworder envelopes are no longer labeled MetaMask without
+application evidence; strict ERC-2335 and Exodus SECO formats have their own
+detectors. Phantom, Solflare, and Keplr names remain future work until a
+reproducible wallet-specific schema supports the attribution.
+
 The current capability matrix and prioritized adapters live in
-[CHAIN_SUPPORT.md](CHAIN_SUPPORT.md).
+[CHAIN_SUPPORT.md](CHAIN_SUPPORT.md). The evidence-backed browser-wallet
+adapter plan is in [WALLET_ARTIFACTS.md](WALLET_ARTIFACTS.md).

@@ -134,46 +134,88 @@ seconds), most-likely first, with "did you mean" typo correction. A phrase
 made entirely of BIP39 words but failing its checksum also gets a bounded
 one-position substitution search, covering one wrong-but-valid word:
 
-    findcrypto --reveal -json ./carve/hit-000001.bin > near.jsonl
-    findcrypto -report near.jsonl -complete --reveal -complete-out keys.txt
-    findcrypto -watch keys.txt -watch-out addrs.csv
+    findcrypto --reveal -json ./carve/hit-000001.bin |
+      findcrypto -report - -complete --reveal \
+        -known-addresses public-addresses.txt \
+        -recovery-start 0 -recovery-count 20
 
-The first command re-scans with words attached (required — completion needs the
-words). The second prints checksum-valid candidates on your local terminal and
-writes three Bitcoin watch-only account keys plus comment-only EVM and Solana
-public addresses per candidate—never phrases or private keys. The third derives
-the Bitcoin gap window (see `docs/WATCH_ONLY.md`). Compare the EVM/Solana public
-addresses with records you already control or a trusted local node; see
-`docs/CHAIN_SUPPORT.md`. Match any address history back to the candidate on your
-terminal and restore that one phrase in wallet software, offline—then delete the
-output.
+The left side re-scans with words attached (required—completion needs the
+words), and the pipe avoids saving reveal JSON containing live seed material.
+Put one public address per line in `public-addresses.txt`; checksummed
+Bitcoin/Litecoin/Dogecoin Base58, Bech32, EIP-55 EVM, Cosmos, and 32-byte Solana
+Base58 forms are validated. The second command derives all supported named
+profiles and 20 bounded slots entirely offline. Unmatched candidate phrases
+stay hidden; a positive match prints its chain, profile, path, address, and
+candidate phrase.
 
-Smudged paper, no scan? Write the words you have into a text file
+If you do not have a known address, use `-complete-out identities.txt` instead.
+On Unix this atomically writes an owner-only handoff containing three Bitcoin
+watch-only account keys and comment-only EVM, Solana, Litecoin, Dogecoin, and
+Cosmos Hub addresses—never phrases or private keys:
+
+    findcrypto --reveal -json ./carve/hit-000001.bin |
+      findcrypto -report - -complete --reveal -complete-out identities.txt
+
+    findcrypto -watch identities.txt -watch-out addrs.csv
+
+For a known BIP39 passphrase on Unix, create an owner-only file, type exactly
+one non-empty UTF-8 line without a BOM in an offline editor, and pass its path.
+The value is NFKD-normalized and never printed, logged, or placed in the
+handoff:
+
+    (umask 077; touch bip39-passphrase.txt)
+    chmod 600 bip39-passphrase.txt
+    ${EDITOR:-vi} bip39-passphrase.txt
+    findcrypto --reveal -json ./carve/hit-000001.bin |
+      findcrypto -report - -complete --reveal \
+        -known-addresses public-addresses.txt \
+        -bip39-passphrase-file bip39-passphrase.txt \
+        -recovery-count 20
+
+An empty file means no passphrase and is refused—omit the flag for the standard
+empty BIP39 passphrase. Windows passphrase files are also refused until
+FindCrypto can verify an owner-only DACL instead of trusting the read-only bit.
+
+Use `-recovery-profiles` to narrow the default set (`bitcoin-standard`,
+`evm-standard`, `solana-standard`, `litecoin-bip44`, `dogecoin-bip44`,
+`cosmos-hub`) and `-recovery-start` to move the bounded window. See
+`docs/CHAIN_SUPPORT.md` for exact paths and limits.
+
+Smudged paper, no scan? Write the words you have into an owner-only text file
 with `xxxx` for each missing word (any non-word letter-run works —
-never a real word), then run the same three commands on that file:
+never a real word). Use an offline editor so the words never enter shell history,
+then pipe the reveal scan directly into completion:
 
-    echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon xxxx" > smudged.txt
-    findcrypto --reveal -json smudged.txt > near.jsonl
-    findcrypto -report near.jsonl -complete --reveal
+    (umask 077; touch smudged.txt)
+    chmod 600 smudged.txt
+    ${EDITOR:-vi} smudged.txt
+    findcrypto --reveal -json smudged.txt |
+      findcrypto -report - -complete --reveal
 
-For scrambled phrases, 3+ missing words, or a forgotten passphrase,
+For scrambled phrases, 3+ missing words, or a passphrase that must itself be
+searched rather than supplied,
 take the carve to
 [BTCRecover](https://github.com/3rdIteration/btcrecover), which
 searches permutations and GPU word combinations offline enumeration
 cannot reach — findcrypto refuses those loudly instead of guessing.
 
-**Stop when:** complete lookups show `used=false` (not merely a zero balance)
-for every derived candidate address on all three paths (44/49/84), after
-raising `-watch-count` if the original wallet could exceed the standard gap
-limit — the words were not findable this way, so delete the output;
-`unordered` never resolves to a validating window after trying orders (it was
-word salad); a single SLIP39 share with
-no path to the threshold (one share alone recovers nothing); anyone
-asks for secrets or money to continue (the scam shield at the top).
+**How to interpret a miss:** `Known-address match: no candidate matched` is
+inconclusive, not a clean bill of health. Check whether completion output was
+truncated, whether a BIP39 passphrase existed, whether the wallet used a later
+index, and whether its wallet-specific path differs from the named presets.
+Likewise, `used=false` across one Bitcoin gap window is not proof that a phrase
+is wrong. Stop one bounded attempt when its stated assumptions are exhausted;
+do not destroy the original evidence or rule out the candidate solely from an
+empty window. Positive address history—even with zero current balance—is the
+strong signal. A single SLIP39 share with no path to the threshold still cannot
+recover anything, and anyone asking for secrets or money triggers the scam
+shield at the top.
 
 ## 4. Encrypted hits — the wallet needs its password
 
-Needles like `crypted_key`, `eth-keystore`, `metamask-vault`.
+Needles like `crypted_key`, `eth-keystore`, `erc2335-keystore`,
+`exodus-seco`, and `browser-passworder-vault` (old saved hits may still contain
+the legacy label `metamask-vault`).
 
 **What it means:** an encrypted wallet or vault. The keys exist but
 are locked; without the password (or a crackable one) nothing moves.
@@ -183,7 +225,11 @@ never the scanned device itself:
 
     findcrypto -hashes ./carve/hit-000001.bin
 
-Then follow `docs/PASSWORD_RECOVERY.md` (hashcat, John, BTCRecover).
+Then follow `docs/PASSWORD_RECOVERY.md` (hashcat, John, BTCRecover). Exodus
+SECO containers export Hashcat mode 28200 after the declared
+metadata+length+blob checksum
+verification. ERC-2335 is detected and carved but deliberately reports that no
+cracker export is supported.
 If you half-remember the password, `-tokenlist` builds the starting
 BTCRecover tokenlist from the words near the hit:
 
@@ -192,10 +238,11 @@ Start with passwords you have actually used; strong unique forgotten
 passwords are effectively unrecoverable, and anyone promising
 otherwise is selling something (see the scam shield).
 
-**Stop when:** `No crack material found` persists after wider carves
-(the record is incomplete), or your realistic password space is
-exhausted. Partial records are skipped on purpose — truncated
-hashes only waste crack time.
+**Stop when:** read stderr first. A format-specific skip means the complete
+artifact is unsupported or damaged and explains whether widening can help; a
+bare `No crack material found` can justify a wider carve. Stop password guesses
+when your realistic space is exhausted. Truncated or unverified hashes are
+never emitted because they only waste crack time.
 
 ## 5. Secrets-profile hits — leaked credentials, not wallets
 

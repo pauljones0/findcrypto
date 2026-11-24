@@ -125,6 +125,10 @@ func classifyNeedle(needle string) walletClass {
 		return walletClass{"extended-public-key", "high", false}
 	case needle == "eth-keystore":
 		return walletClass{"ethereum-keystore", "high", true}
+	case needle == "erc2335-keystore":
+		return walletClass{"erc2335-keystore", "high", true}
+	case needle == "exodus-seco":
+		return walletClass{"exodus-seco", "high", true}
 	case needle == "electrum-seed":
 		return walletClass{"electrum-seed", "high", false}
 	case needle == "electrum-file":
@@ -137,8 +141,11 @@ func classifyNeedle(needle string) walletClass {
 		return walletClass{"lightning-lnd", "medium", false}
 	case needle == "channel.backup" || needle == "channel.db":
 		return walletClass{"lightning-lnd", "low", false}
-	case needle == "metamask-vault":
-		return walletClass{"metamask-vault", "high", true}
+	case needle == "browser-passworder-vault" || needle == "metamask-vault":
+		// The old label remains readable in saved hits, but new scans use
+		// the implementation-neutral name: this envelope alone cannot
+		// prove which browser wallet wrote it.
+		return walletClass{"browser-passworder-vault", "high", true}
 	case needle == "solana-keypair":
 		return walletClass{"solana-keypair", "high", false}
 	case needle == "pem-private-key":
@@ -161,12 +168,14 @@ var playbookOrder = []string{
 	"extended-private-key",
 	"extended-public-key",
 	"ethereum-keystore",
+	"erc2335-keystore",
+	"exodus-seco",
 	"electrum-seed",
 	"electrum-file",
 	"descriptor",
 	"slip39-share",
 	"lightning-lnd",
-	"metamask-vault",
+	"browser-passworder-vault",
 	"solana-keypair",
 	"pem-private-key",
 	"aws-access-key",
@@ -176,25 +185,27 @@ var playbookOrder = []string{
 }
 
 var playbookSteps = map[string]string{
-	"bitcoin-core-legacy":     "Bitcoin Core legacy traces: carve around the hits (-extract-dir on a different drive) and open a salvaged copy in Bitcoin Core on an offline machine.",
-	"bitcoin-core-descriptor": "Descriptor-wallet traces: salvage the SQLite database from the carve and inspect it with sqlite3; descriptors list the wallet's addresses.",
-	"bip39-seed":              "Seed-phrase-shaped hit: treat any carve as a live secret, move it to encrypted storage, and restore on an offline machine.",
-	"private-key-wif":         "Private-key hit: handle the carve as funds — sweep to a fresh wallet from an offline machine, then discard the exposed key.",
-	"extended-private-key":    "Extended private key: it controls a whole wallet — sweep to a fresh wallet from an offline machine.",
-	"extended-public-key":     "Extended public key (watch-only): run `findcrypto -watch carve.bin -watch-out addrs.csv` to derive its addresses locally, then check those addresses anywhere — never paste the key into a website (see docs/WATCH_ONLY.md).",
-	"ethereum-keystore":       "Ethereum keystore: it imports into any Web3 wallet once you supply its password.",
-	"electrum-seed":           "Electrum seed: restore it in Electrum on an offline machine (standard/segwit follows automatically); treat any carve as a live secret.",
-	"electrum-file":           "Electrum wallet file: open a copy in Electrum on an offline machine; if it asks for a password, recovering that password is the remaining work.",
-	"descriptor":              "Output descriptor with a valid checksum: import it into Bitcoin Core (importdescriptors) on an offline machine to watch its addresses.",
-	"slip39-share":            "SLIP39 Shamir share: one share alone recovers nothing — gather the threshold number of shares, then combine them in a hardware wallet or compatible tool on an offline machine.",
-	"lightning-lnd":           "Lightning (lnd) traces: recover with channel.backup plus the seed via lnd's recovery flow on an offline machine; database fragments alone hold no funds without the seed.",
-	"metamask-vault":          "MetaMask vault (encrypted): it needs its password — run the offline vault decryptor once you have it.",
-	"solana-keypair":          "Solana CLI keypair: treat the carve as a live private key, move it to encrypted storage, and transfer assets to a fresh wallet from an offline machine.",
-	"pem-private-key":         "Private-key block: treat any carve as a live secret — move it to encrypted storage, rotate the key, and purge it from the repo or image it leaked from.",
-	"aws-access-key":          "AWS access key ID: revoke it in IAM unless you own it and it is still needed, then check CloudTrail for misuse between leak and revocation.",
-	"github-token":            "GitHub token: revoke it at github.com/settings/tokens, audit what it touched, and rotate anything it could reach.",
-	"wallet-filename":         "Only the wallet.dat name matched: a weak signal — look for nearby key hits before spending effort.",
-	"unknown":                 "Unclassified hits: inspect the offsets manually.",
+	"bitcoin-core-legacy":      "Bitcoin Core legacy traces: carve around the hits (-extract-dir on a different drive) and open a salvaged copy in Bitcoin Core on an offline machine.",
+	"bitcoin-core-descriptor":  "Descriptor-wallet traces: salvage the SQLite database from the carve and inspect it with sqlite3; descriptors list the wallet's addresses.",
+	"bip39-seed":               "Seed-phrase-shaped hit: treat any carve as a live secret, move it to encrypted storage, and restore on an offline machine.",
+	"private-key-wif":          "Private-key hit: handle the carve as funds — sweep to a fresh wallet from an offline machine, then discard the exposed key.",
+	"extended-private-key":     "Extended private key: it controls a whole wallet — sweep to a fresh wallet from an offline machine.",
+	"extended-public-key":      "Extended public key (watch-only): run `findcrypto -watch carve.bin -watch-out addrs.csv` to derive its addresses locally, then check those addresses anywhere — never paste the key into a website (see docs/WATCH_ONLY.md).",
+	"ethereum-keystore":        "Ethereum keystore: it imports into any Web3 wallet once you supply its password.",
+	"erc2335-keystore":         "ERC-2335 BLS12-381 keystore (encrypted; commonly used for validators): preserve the complete JSON and its password; findcrypto validates and carves it but does not export a cracker hash.",
+	"exodus-seco":              "Exodus SECO container (encrypted): preserve the complete seed.seco file; `findcrypto -hashes` can export its checksum-verified Hashcat mode 28200 line.",
+	"electrum-seed":            "Electrum seed: restore it in Electrum on an offline machine (standard/segwit follows automatically); treat any carve as a live secret.",
+	"electrum-file":            "Electrum wallet file: open a copy in Electrum on an offline machine; if it asks for a password, recovering that password is the remaining work.",
+	"descriptor":               "Output descriptor with a valid checksum: import it into Bitcoin Core (importdescriptors) on an offline machine to watch its addresses.",
+	"slip39-share":             "SLIP39 Shamir share: one share alone recovers nothing — gather the threshold number of shares, then combine them in a hardware wallet or compatible tool on an offline machine.",
+	"lightning-lnd":            "Lightning (lnd) traces: recover with channel.backup plus the seed via lnd's recovery flow on an offline machine; database fragments alone hold no funds without the seed.",
+	"browser-passworder-vault": "Browser-passworder vault (encrypted): preserve the complete wallet storage and recover its password; this shared envelope alone does not identify MetaMask, Phantom, or another wallet.",
+	"solana-keypair":           "Solana CLI keypair: treat the carve as a live private key, move it to encrypted storage, and transfer assets to a fresh wallet from an offline machine.",
+	"pem-private-key":          "Private-key block: treat any carve as a live secret — move it to encrypted storage, rotate the key, and purge it from the repo or image it leaked from.",
+	"aws-access-key":           "AWS access key ID: revoke it in IAM unless you own it and it is still needed, then check CloudTrail for misuse between leak and revocation.",
+	"github-token":             "GitHub token: revoke it at github.com/settings/tokens, audit what it touched, and rotate anything it could reach.",
+	"wallet-filename":          "Only the wallet.dat name matched: a weak signal — look for nearby key hits before spending effort.",
+	"unknown":                  "Unclassified hits: inspect the offsets manually.",
 }
 
 func buildPlaybook(counts map[string]int, encrypted, crackReady, salvaged, salvagedSuspect int, hasNearMiss bool) []string {

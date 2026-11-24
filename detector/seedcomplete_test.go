@@ -13,6 +13,8 @@ package detector
 // never the implementation's own assumptions.
 
 import (
+	"bytes"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -527,6 +529,57 @@ func TestSeedToAccountsOracle(t *testing.T) {
 	}
 	if fp := mustParseXPub(t, got["XPub44"]).Fingerprint(); fp != "6cc9f252" {
 		t.Errorf("account fingerprint %s, want oracle 6cc9f252", fp)
+	}
+}
+
+// TestMnemonicToSeedPassphraseOfficial pins the first official BIP39 vector:
+// zero entropy (abandon x11 + about), passphrase TREZOR. This checks the KDF
+// independently of every downstream chain adapter.
+func TestMnemonicToSeedPassphraseOfficial(t *testing.T) {
+	mn := strings.Split(seedOraclePhrases[12], " ")
+	seed, err := mnemonicToSeed(mn, []byte("TREZOR"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zeroBytes(seed)
+	want := "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e5349553" +
+		"1f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
+	if got := hex.EncodeToString(seed); got != want {
+		t.Fatalf("BIP39 seed = %s, want %s", got, want)
+	}
+}
+
+func TestMnemonicToSeedPassphraseNFKDAndOwnership(t *testing.T) {
+	mn := strings.Split(seedOraclePhrases[12], " ")
+	composed := []byte("caf\u00e9 \u334d")
+	original := append([]byte(nil), composed...)
+	decomposed := []byte("cafe\u0301 \u30e1\u30fc\u30c8\u30eb")
+	a, err := mnemonicToSeed(mn, composed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zeroBytes(a)
+	b, err := mnemonicToSeed(mn, decomposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zeroBytes(b)
+	if !bytes.Equal(a, b) {
+		t.Fatal("canonically equivalent passphrases derived different seeds")
+	}
+	if !bytes.Equal(composed, original) {
+		t.Fatal("mnemonicToSeed mutated the caller's passphrase")
+	}
+	empty, err := mnemonicToSeed(mn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zeroBytes(empty)
+	if bytes.Equal(a, empty) {
+		t.Fatal("non-empty passphrase must change the derived seed")
+	}
+	if _, err := mnemonicToSeed(mn, []byte{0xff}); err == nil {
+		t.Fatal("invalid UTF-8 passphrase must refuse")
 	}
 }
 

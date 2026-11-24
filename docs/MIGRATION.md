@@ -1,7 +1,7 @@
 # Migrating from findbtc to findcrypto
 
 The project has outgrown its Bitcoin-only name: it already recognizes Ethereum,
-Electrum, SLIP39, Lightning, MetaMask, descriptor, generic secret, and now Solana
+Electrum, SLIP39, Lightning, browser-passworder, descriptor, generic secret, and now Solana
 artifacts. The repository and primary command are therefore `findcrypto`.
 
 ## What changes

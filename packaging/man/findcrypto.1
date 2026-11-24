@@ -34,6 +34,9 @@ Opt\-in: query ADDRESS activity and balances from this Esplora\-compatible base 
 .B \-baseline
 Suppress \-walk/\-patch findings fingerprinted in baseline FILE (a reviewed hits.jsonl from an earlier sweep)
 .TP
+.B \-bip39\-passphrase\-file
+With \-report \-complete identity derivation: read one BIP39 passphrase from protected owner\-only FILE
+.TP
 .B \-case\-log
 Append a JSON case\-log record per scan to FILE (source identity, streaming hashes, skipped ranges, counts)
 .TP
@@ -47,7 +50,7 @@ With \-report: enumerate checksum\-valid completions for partial\-seed (near\-mi
 With \-report \-complete: candidates shown per hit, most\-likely first (only with \-complete) (default 128)
 .TP
 .B \-complete\-out
-With \-report \-complete: write public candidate handoff (Bitcoin watch keys plus EVM/Solana addresses) to PATH (only with \-complete)
+With \-report \-complete: write selected public candidate identities to PATH (only with \-complete)
 .TP
 .B \-context
 Bytes carved before and after each hit (only with \-extract\-dir) (default 1048576)
@@ -79,11 +82,23 @@ Extract crack\-ready password hashes from FILE (or \- for stdin) instead of scan
 .B \-json
 Print detections as JSON lines instead of human text
 .TP
+.B \-known\-addresses
+With \-report \-complete: reveal only candidates matching public addresses in FILE, entirely offline
+.TP
 .B \-patch
 Parse input as a patch series (git log \-p): attribute hits to commit+path with history fingerprints for \-baseline
 .TP
 .B \-profile
 Detector set: empty (wallet matchers) or secrets (adds private\-key blocks and credential shapes; see docs/SECRETS_PROFILE.md)
+.TP
+.B \-recovery\-count
+With \-report \-complete identity derivation: indexes per selected profile (default 1)
+.TP
+.B \-recovery\-profiles
+With \-report \-complete identity derivation: comma\-separated named profiles (default: all supported)
+.TP
+.B \-recovery\-start
+With \-report \-complete identity derivation: first bounded address/account index (default 0)
 .TP
 .B \-report
 Summarize a \-json hits file (or \- for stdin) instead of scanning

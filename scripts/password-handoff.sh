@@ -185,7 +185,7 @@ echo "ran $n doc commands verbatim"
 # Outcome assertions: the transcript must show every crack, not just
 # clean exits — and LIVE cracks, not potfile replays. A warm hashcat
 # potfile prints "All hashes found as potfile entries" with no Status
-# block, so count the per-run completion markers: 3 hashcat cracks, 3
+# block, so count the per-run completion markers: 4 hashcat cracks, 3
 # john cracks, 2 BTCRecover finds (passwordlist + tokenlist runs).
 fail=0
 expect() {
@@ -209,8 +209,9 @@ expect_count() {
 expect 'btcr-test-password' 'bitcoin mkey cracks (hashcat + john)'
 expect 'RiverStone2019' 'eth-pbkdf2 cracks (hashcat + john + BTCRecover)'
 expect 'tide-harbor-42' 'eth-scrypt cracks (hashcat + john)'
+expect 'desert-orbit-77' 'Exodus SECO cracks (hashcat mode 28200)'
 expect "Password found: 'RiverStone2019'" 'BTCRecover tokenlist end-to-end'
-expect_count 'Status\.+: Cracked' 3 'hashcat cracked live in all 3 modes'
+expect_count 'Status\.+: Cracked' 4 'hashcat cracked live in all 4 modes'
 expect_count 'Session completed' 3 'john cracked live in all 3 runs'
 expect_count "Password found: 'RiverStone2019'" 2 'BTCRecover found live in both runs'
 

@@ -29,9 +29,11 @@ It looks for byte traces of legacy wallets (`bestblock`, `defaultkey`,
 WIF and extended (`xprv`/`xpub`/...) keys with
 base58check validation, Ethereum keystore files (validated by structure),
 Electrum seeds and wallet files, checksummed output descriptors, SLIP39
-shares, lnd channel-database markers, MetaMask vaults,
-validated Solana CLI keypair files, and the `wallet.dat` file name. Only key and phrase
-types are ever printed; the secrets themselves stay out of logs and output.
+shares, lnd channel-database markers, generic browser-passworder vault
+envelopes, ERC-2335 BLS12-381 keystores, structured Exodus SECO
+containers, validated Solana CLI keypair files, and the `wallet.dat` file
+name. Only key and phrase types are ever printed; the secrets themselves stay
+out of logs and output.
 The exact discovery/recovery/activity boundary for each ecosystem—and the next
 chain adapters—is tracked in [the chain support matrix](docs/CHAIN_SUPPORT.md).
 
@@ -275,15 +277,43 @@ One or two words missing or smudged, or one wrong-but-valid word, is enumerable 
 (checksum-gated, most-likely first, with typo correction) as a
 `-report` follow-up — no new mode:
 
-    findcrypto --reveal -json ./carve/hit-000001.bin > near.jsonl
-    findcrypto -report near.jsonl -complete --reveal -complete-out keys.txt
-    findcrypto -watch keys.txt -watch-out addrs.csv
+    findcrypto --reveal -json ./carve/hit-000001.bin |
+      findcrypto -report - -complete --reveal -complete-out identities.txt
+    findcrypto -watch identities.txt -watch-out addrs.csv
 
-Candidates print on the local terminal only; the keys file contains Bitcoin
-watch-only account keys plus comment-only EVM and Solana public addresses,
-never phrases or private keys. Its Bitcoin keys feed `-watch` with no
-copy-paste. Past
-two missing words the tool refuses loudly and points at
+Candidates print on the local terminal only. The identity handoff contains
+Bitcoin watch-only account keys plus comment-only EVM, Solana, Litecoin,
+Dogecoin, and Cosmos Hub addresses, never phrases or private keys. Its Bitcoin
+keys feed `-watch` with no copy-paste.
+
+The safer confirmation path is an entirely offline match against public
+addresses you already know. Unmatched candidate phrases stay hidden:
+
+    findcrypto --reveal -json ./carve/hit-000001.bin |
+      findcrypto -report - -complete --reveal \
+        -known-addresses public-addresses.txt \
+        -recovery-profiles bitcoin-standard,evm-standard,solana-standard,litecoin-bip44,dogecoin-bip44,cosmos-hub \
+        -recovery-start 0 -recovery-count 20
+
+The pipe keeps `--reveal` JSON—which contains seed words—out of a saved
+intermediate file. For a BIP39 passphrase on Unix, create an owner-only regular
+file, enter exactly one non-empty UTF-8 line without a BOM in an offline editor,
+then add
+`-bip39-passphrase-file bip39-passphrase.txt`:
+
+    (umask 077; touch bip39-passphrase.txt)
+    chmod 600 bip39-passphrase.txt
+    ${EDITOR:-vi} bip39-passphrase.txt
+
+The value is NFKD-normalized and never printed, logged, accepted as a command
+argument, or written to the handoff. A no-match result is deliberately called
+inconclusive: another passphrase, later index, or wallet-specific derivation
+can produce different addresses. All ranges are bounded (indexes below 10,000,
+at most 100 per profile, plus a total candidate-work cap). Protected passphrase
+input currently refuses Windows because FindCrypto cannot yet verify an
+owner-only Windows DACL.
+
+Past two missing words the tool refuses loudly and points at
 [BTCRecover](https://github.com/3rdIteration/btcrecover), which also
 owns scrambled-phrase reordering. Full recipe and stop rules:
 [docs/WHAT_NEXT.md](docs/WHAT_NEXT.md).
@@ -349,9 +379,20 @@ Beyond Core wallets and BIP39, the scanner validates:
 - **Lightning (lnd).** channel.db bucket markers and the channel.backup
   / channel.db file names. The backup file itself is encrypted, so only
   its name is detectable; buckets say a database is near.
-- **MetaMask vaults.** Encrypted vault objects (plain or JSON-escaped
-  as in browser storage), validated by field shape and decoded
-  lengths. Always flagged as needing its password.
+- **Browser-passworder vaults.** Encrypted vault objects (plain or
+  JSON-escaped as in browser storage), validated by field shape and decoded
+  lengths. The shared envelope is not attributed to MetaMask, Phantom, or any
+  other wallet without wallet-specific evidence.
+- **ERC-2335 BLS12-381 keystores.** Modular version-4 JSON with strict
+  scrypt/PBKDF2, SHA-256 checksum, AES-128-CTR, random UUIDv4, ERC-2334 path,
+  and public-key shapes. The chain-neutral format is commonly used for
+  validators; it is detected and carved, but no unsupported cracker hash is
+  invented.
+- **Exodus SECO containers.** Exact `SECO` v0 header, Exodus application tag,
+  positive power-of-two scrypt parameters, AES-256-GCM metadata, and fixed
+  padding are validated during scans. `-hashes` additionally verifies the
+  declared metadata+length+blob SHA-256 checksum and Hashcat field bounds
+  before exporting mode 28200 material.
 - **Solana CLI keypairs.** JSON arrays containing exactly 64 Ed25519
   keypair bytes. The public half must derive from the private seed, which
   rejects arbitrary 64-number arrays; the bytes themselves never print.

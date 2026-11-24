@@ -304,8 +304,19 @@ type WatchEntry struct {
 // CollectWatchAddrs derives perChain addresses on each of the external (0)
 // and change (1) chains for every extended public key.
 func CollectWatchAddrs(xpubs []string, perChain int) ([]WatchEntry, error) {
-	if perChain < 1 || perChain > WatchMaxCount {
-		return nil, fmt.Errorf("count %d out of range 1-%d", perChain, WatchMaxCount)
+	return CollectWatchAddrsRange(xpubs, 0, perChain)
+}
+
+// CollectWatchAddrsRange derives count addresses beginning at start on both
+// external and change chains. It supports bounded known-address recovery
+// without deriving and discarding every earlier index.
+func CollectWatchAddrsRange(xpubs []string, start uint32, count int) ([]WatchEntry, error) {
+	if count < 1 || count > WatchMaxCount {
+		return nil, fmt.Errorf("count %d out of range 1-%d", count, WatchMaxCount)
+	}
+	end := uint64(start) + uint64(count)
+	if start >= WatchMaxCount || end > WatchMaxCount {
+		return nil, fmt.Errorf("index range %d..%d out of range 0-%d", start, end-1, WatchMaxCount-1)
 	}
 	var out []WatchEntry
 	for _, s := range xpubs {
@@ -319,7 +330,7 @@ func CollectWatchAddrs(xpubs []string, perChain int) ([]WatchEntry, error) {
 			if err != nil {
 				return nil, fmt.Errorf("cannot derive chain %d: %w", chain, err)
 			}
-			entries, err := collectWatchChain(acct, chainKey, fp, chain, perChain, 0, DeriveChild)
+			entries, err := collectWatchChain(acct, chainKey, fp, chain, count, start, uint32(WatchMaxCount), DeriveChild)
 			if err != nil {
 				return nil, err
 			}
@@ -334,13 +345,14 @@ type watchChildDeriver func(*XPub, uint32) (*XPub, error)
 // collectWatchChain returns exactly perChain valid children. BIP32 requires an
 // invalid child to be skipped in favor of the next index; counting attempted
 // indices instead would silently shorten an export and could hide the only
-// address with history. start is zero in production and injectable in tests so
-// the non-hardened boundary can be exercised without billions of derivations.
-func collectWatchChain(acct, chainKey *XPub, fingerprint string, chain uint32, perChain int, start uint32, derive watchChildDeriver) ([]WatchEntry, error) {
+// address with history. limit is exclusive: recovery uses WatchMaxCount so an
+// invalid last bounded child cannot spill into an index the caller was told was
+// out of range. Tests can still inject the full non-hardened boundary.
+func collectWatchChain(acct, chainKey *XPub, fingerprint string, chain uint32, perChain int, start, limit uint32, derive watchChildDeriver) ([]WatchEntry, error) {
 	out := make([]WatchEntry, 0, perChain)
 	for idx := start; len(out) < perChain; idx++ {
-		if idx >= 0x80000000 {
-			return nil, fmt.Errorf("cannot derive %d: exhausted non-hardened child indexes after %d valid addresses", chain, len(out))
+		if idx >= limit || idx >= 0x80000000 {
+			return nil, fmt.Errorf("cannot derive %d: exhausted non-hardened bounded child indexes after %d valid addresses", chain, len(out))
 		}
 		child, err := derive(chainKey, idx)
 		if err == errInvalidChild {

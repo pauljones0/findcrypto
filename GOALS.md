@@ -69,6 +69,9 @@ completely solve the pain point?"**
 | 44 | FAT deleted-entry long-name recovery | complete | 21f1111 |
 | 45 | Multi-volume filesystem checkpoints | complete | adba07c |
 | 46 | FindCrypto migration + recovery modernization | complete | b4f6fe7 |
+| 47 | Local verification + multichain candidate identities | complete | b92e1e3 |
+| 48 | Offline candidate confirmation + chain/artifact expansion | in progress | — |
+| 49 | Structured manifests + wallet-specific adapters | queued | — |
 
 ## Global done criteria (every goal)
 
@@ -1539,6 +1542,56 @@ Solana.
 full Go tests, vulnerability/static analysis, packaging metadata, and a clean
 tree with no workflow YAML. Because Actions are intentionally disabled, the
 verification record is local and explicit.
+
+## Goal 48 — Offline candidate confirmation + chain/artifact expansion
+
+**Pain to completely solve:** repaired seed candidates still expose too many
+phrases before the owner can connect one to known public evidence, passphrases
+and later indexes cannot be checked safely, and several common chains/artifacts
+remain invisible or mislabeled.
+
+**Completely solved when:**
+- [ ] A validated public-address file filters candidates entirely offline across
+      bounded named profiles; unmatched phrases stay hidden and misses are
+      explicitly inconclusive.
+- [ ] A protected owner-only file supplies a BIP39 passphrase with mandatory
+      Unicode NFKD normalization and no argv/environment-value surface.
+- [ ] Configurable start/count ranges cover Bitcoin standard paths, EVM,
+      Solana, Litecoin, Dogecoin, and Cosmos Hub with independent vectors and a
+      total-work bound.
+- [ ] Strict ERC-2335 and Exodus SECO detectors survive boundary/noise tests;
+      only checksum-verified Exodus containers export official Hashcat mode
+      28200 material.
+- [ ] New scans call the shared encrypted JSON envelope
+      `browser-passworder-vault`, while reports remain compatible with saved
+      `metamask-vault` hits and never invent Phantom/Solflare/Keplr attribution.
+- [ ] Owner docs, completions, man pages, corpus generation, CLI gates, full Go
+      tests, vet/static analysis, and the official Exodus extractor oracle all
+      agree with the implementation.
+
+**Verify:** formatting, generated-artifact drift, module integrity, build/vet,
+focused vectors and CLI privacy tests, full Go tests, static/vulnerability
+checks where locally available, official `exodus2hashcat.py` parity, and no
+workflow files or newly enabled GitHub Actions.
+
+## Goal 49 — Structured manifests + wallet-specific adapters
+
+**Pain to completely solve:** the public identity handoff is optimized for
+Bitcoin `-watch` compatibility rather than case-tool ingest, and named wallet
+families still lack evidence-backed alternative paths/artifact schemas.
+
+**Completely solved when:**
+- [ ] An atomic owner-only JSONL/CSV manifest records candidate ID, chain,
+      profile, path, index, address, and match state without phrase/private
+      material.
+- [ ] Published wallet-specific derivation profiles (starting with legacy
+      Ledger/Solana variants) have independent vectors and remain bounded.
+- [ ] Phantom, Solflare, and Keplr names are added only where an official or
+      independently reproducible schema plus WebExtension storage namespace
+      proves attribution; the current versioned evidence and negative-test
+      contract are recorded in `docs/WALLET_ARTIFACTS.md`.
+- [ ] Opt-in owner-node activity adapters preserve lifetime-use evidence and
+      never make a no-history result sound conclusive.
 
 ## Commit policy
 

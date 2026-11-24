@@ -247,6 +247,10 @@ func TestAdviseWalletCopyRoutesToHashes(t *testing.T) {
 	if err := os.WriteFile(capitalPath, []byte(keystorePBKDF2JSON), 0644); err != nil {
 		t.Fatal(err)
 	}
+	exodusPath := filepath.Join(dir, "seed.seco")
+	if err := os.WriteFile(exodusPath, exodusFixture(64), 0600); err != nil {
+		t.Fatal(err)
+	}
 	cases := map[string]struct {
 		path string
 		want string
@@ -254,6 +258,7 @@ func TestAdviseWalletCopyRoutesToHashes(t *testing.T) {
 		"mkey record":        {mkeyPath, "mkey record at offset 200"},
 		"keystore":           {keystorePath, "complete Ethereum keystore object at offset 0"},
 		"capitalized Crypto": {capitalPath, "complete Ethereum keystore object at offset 0"},
+		"Exodus SECO":        {exodusPath, "Exodus SECO container prefix at offset 0"},
 	}
 	for name, tc := range cases {
 		ad, err := Advise(tc.path)

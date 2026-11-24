@@ -17,13 +17,15 @@ means "this variant does not produce it", never "unknown".
 | `file_name` | never | when known | as per scan | as per scan |
 | `words` | never | never | BIP39 hits only | as per scan |
 | `carve_path`, `carve` | never | never | never | when carving succeeds |
-| `hashes` | never | never | never | when mkey/keystore records found |
+| `hashes` | never | never | never | when supported Core, Web3, or Exodus encrypted-wallet records are found |
 | `salvage` | never | never | never | when a `.salvage.db` is written |
 | `fingerprint` | on `-patch` scans (history key); `-walk` sweeps carry the walk key when fingerprintable | never | as per scan | as per scan |
 | `commit`, `path`, `line` | on `-patch` scans, when inside a commit/diff/added-or-context line | never | as per scan | as per scan |
 
 Privacy notes: `words` appears only under the owner `--reveal` opt-in;
-`hashes` carries cracker inputs, never wallet ciphertext.
+`hashes` carries cracker inputs. Some formats necessarily embed bounded
+encrypted key material (never plaintext or a decryption key), so treat JSONL
+and carve sidecars as recovery-sensitive evidence.
 
 ## Stability policy (ties to Goal 19)
 

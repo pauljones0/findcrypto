@@ -128,6 +128,69 @@ func FuzzKeystore(f *testing.F) {
 	})
 }
 
+func FuzzBrowserPassworder(f *testing.F) {
+	f.Add([]byte(browserPassworderOldVault), int64(0))
+	f.Add([]byte(`{"data":"bad","iv":"bad","salt":"bad"}`), int64(50))
+	f.Add(bytes.Repeat([]byte(`{"iv"`), 100), int64(0))
+	f.Add([]byte{}, int64(0))
+	f.Fuzz(func(t *testing.T, data []byte, base int64) {
+		if len(data) > 8192 || base < 0 || base > 1<<40 {
+			t.Skip()
+		}
+		for _, m := range findBrowserPassworderVaults(data, base) {
+			if m.startAbs < base || m.endAbs > base+int64(len(data)) || m.startAbs >= m.endAbs {
+				t.Fatalf("match out of bounds: %+v base %d len %d", m, base, len(data))
+			}
+			if m.endAbs-m.startAbs > browserPassworderMaxSpan {
+				t.Fatalf("match exceeds max span: %+v", m)
+			}
+		}
+	})
+}
+
+func FuzzERC2335(f *testing.F) {
+	f.Add([]byte(erc2335ScryptVector), int64(0))
+	f.Add([]byte(`{"checksum":{"function":"sha256","params":null,"message":"00"}}`), int64(50))
+	f.Add(bytes.Repeat([]byte{'{'}, 100), int64(0))
+	f.Fuzz(func(t *testing.T, data []byte, base int64) {
+		if len(data) > 8192 || base < 0 || base > 1<<40 {
+			t.Skip()
+		}
+		for _, m := range findERC2335Keystores(data, base) {
+			if m.startAbs < base || m.endAbs > base+int64(len(data)) || m.startAbs >= m.endAbs {
+				t.Fatalf("match out of bounds: %+v base %d len %d", m, base, len(data))
+			}
+			if m.endAbs-m.startAbs > erc2335MaxSpan {
+				t.Fatalf("match exceeds max span: %+v", m)
+			}
+		}
+	})
+}
+
+func FuzzExodusSECO(f *testing.F) {
+	f.Add(exodusFixture(64), int64(0))
+	f.Add([]byte("SECO"), int64(50))
+	f.Add(bytes.Repeat([]byte{0}, exodusPrefixSpan), int64(0))
+	f.Fuzz(func(t *testing.T, data []byte, base int64) {
+		if len(data) > 8192 || base < 0 || base > 1<<40 {
+			t.Skip()
+		}
+		for _, m := range findExodusSECO(data, base) {
+			if m.startAbs < base || m.endAbs > base+int64(len(data)) ||
+				m.endAbs-m.startAbs != exodusPrefixSpan {
+				t.Fatalf("match out of bounds: %+v base %d len %d", m, base, len(data))
+			}
+			start := m.startAbs - base
+			if p, err := parseExodusSECO(data[start:], m.startAbs); err == nil {
+				h := p.Hash()
+				if h.Format != "exodus-seco" || h.Offset != m.startAbs || h.Hash == "" {
+					t.Fatalf("bad hash metadata: %+v", h)
+				}
+			}
+		}
+	})
+}
+
 func FuzzBase58(f *testing.F) {
 	f.Add("5HpjKrb7dH5kKQQzmbjB87Mxova7mek5bXUTWfndcX6tBoqUwzm")
 	f.Add("xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi")

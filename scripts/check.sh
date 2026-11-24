@@ -131,7 +131,7 @@ fi
 
 echo "==> static analysis and fuzz smoke"
 staticcheck ./...
-for f in FuzzBIP39 FuzzKeys FuzzKeystore FuzzBase58 FuzzZipLocalHeader; do
+for f in FuzzBIP39 FuzzKeys FuzzKeystore FuzzBrowserPassworder FuzzERC2335 FuzzExodusSECO FuzzBase58 FuzzZipLocalHeader; do
 	go test ./detector -run NONE -fuzz "^$f\$" -fuzztime 15s
 done
 

@@ -7,7 +7,8 @@ or BTCRecover. Everything here works offline.
 Every `sh` command below runs verbatim through `scripts/password-handoff.sh`
 and the heavyweight `scripts/check.sh full` path against the corpus in
 `testdata/password-handoff/` — a real cracked
-BDB/SQLite mkey pair, two generated Ethereum keystores, a hit-context
+BDB/SQLite mkey pair, two generated Ethereum keystores, a generated Exodus
+SECO container, a hit-context
 file, and `passwords.txt`, the tiny crack list every §3 command tries
 (it holds each corpus password between two wrong ones, so a green run
 proves the tools really tried and found). Work from a scratch dir with
@@ -26,10 +27,12 @@ older ones may lack the formats.
 
       go build -o findcrypto .
 
-- hashcat with a CPU backend for the small runs here (pocl). The
-  verified version is 6.2.6:
+- hashcat with a CPU backend for the small runs here (pocl). The local full
+  harness pins current upstream 8.0.0 and refuses a different banner; use the
+  official release when your package manager is older:
 
       sudo apt-get install hashcat pocl-opencl-icd
+      hashcat --version   # must print v8.0.0 for scripts/check.sh full
 
   On other systems see the [hashcat homepage](https://hashcat.net)
   plus a CPU OpenCL ICD (pocl) or your GPU vendor's runtime.
@@ -65,6 +68,7 @@ scanned device itself). One line per record, ready to feed a cracker:
 ```sh
 findcrypto -hashes core-bdb-mkey.bin
 findcrypto -hashes eth-pbkdf2.json -json
+findcrypto -hashes seed.seco
 ```
 
 You get (sample output from the corpus):
@@ -79,13 +83,17 @@ $bitcoin$64$e6246120c45e390daa6a57476e7fbe4f57d83f79d75f9b4c1db680fe5a846cb8$16$
   (same bytes bitcoin2john.py emits: last two AES blocks, salt, iterations)
 - Ethereum scrypt: `$ethereum$s*<n>*<r>*<p>*<salt>*<ct>*<mac>`
 - Ethereum PBKDF2: `$ethereum$p*<c>*<salt>*<ct>*<mac>`
+- Exodus SECO: `EXODUS:<n>:<r>:<p>:<base64-salt>:<base64-key-iv>:<base64-encrypted-key>:<base64-key-tag>`
+  (declared metadata+length+blob SHA-256 verified before Hashcat mode 28200 export)
 
 `No crack material found` means the bytes hold no exportable record —
-but read stderr before carving wider: keystore-shaped records that fail
-strict validation are skipped with the reason (`[hashes] skipped
+but read stderr before carving wider: wallet-shaped records that fail strict
+validation are skipped with the reason (`[hashes] skipped
 ethereum-keystore @0: unsupported cipher "aes-256-cbc"`), and presale
-wallets are reported as out of scope the same way. No carve fixes an
-unsupported cipher or KDF. Only a bare message with no skip lines means
+wallets, ERC-2335 keystores (no supported export), and damaged or truncated
+Exodus containers are reported the same way. No carve fixes an unsupported
+cipher/KDF or checksum mismatch; a wider carve can fix a truncated container.
+Only a bare message with no skip lines means
 "nothing wallet-shaped here" — then carve a wider context (`-context`)
 around the hit and retry. Partial mkey patterns stay silent on purpose:
 anything looser than 66 contiguous bytes plus method 0 plus sane
@@ -93,15 +101,16 @@ iterations would report noise, and a truncated hash would only waste
 crack time.
 
 Crackers want one hash per line with no filenames, one file per mode
-(mixing modes in one file aborts the run — see Failure modes). The
-`$...$` lines start at column 0, so `grep '^\$'` lifts them out of the
-human-readable output:
+(mixing modes in one file aborts the run — see Failure modes). Bitcoin/Ethereum
+`$...$` lines and Exodus `EXODUS:...` lines start at column 0, so use a
+format-specific filter:
 
 ```sh
 findcrypto -hashes core-bdb-mkey.bin | grep '^\$' > hashes-bitcoin.txt
 findcrypto -hashes core-sqlite-mkey.bin | grep '^\$' >> hashes-bitcoin.txt
 findcrypto -hashes eth-pbkdf2.json | grep '^\$' > hashes-eth-pbkdf2.txt
 findcrypto -hashes eth-scrypt.json | grep '^\$' > hashes-eth-scrypt.txt
+findcrypto -hashes seed.seco | grep '^EXODUS:' > hashes-exodus.txt
 ```
 
 ## 2. Build a tokenlist from hit context
@@ -146,10 +155,13 @@ hashcat -m 15600 --potfile-path=hashcat.pot hashes-eth-pbkdf2.txt passwords.txt
 hashcat -m 15600 --potfile-path=hashcat.pot --show hashes-eth-pbkdf2.txt
 hashcat -m 15700 --potfile-path=hashcat.pot --scrypt-tmto 5 hashes-eth-scrypt.txt passwords.txt
 hashcat -m 15700 --potfile-path=hashcat.pot --show hashes-eth-scrypt.txt
+hashcat -m 28200 --potfile-path=hashcat.pot hashes-exodus.txt passwords.txt
+hashcat -m 28200 --potfile-path=hashcat.pot --show hashes-exodus.txt
 ```
 
 Modes: 11300 Bitcoin Core mkey, 15600 Ethereum PBKDF2, 15700 Ethereum
-scrypt. `--potfile-path=hashcat.pot` keeps this recovery's results in
+scrypt, and 28200 Exodus Desktop Wallet scrypt.
+`--potfile-path=hashcat.pot` keeps this recovery's results in
 a run-local potfile next to the hashes instead of hashcat's global
 one: re-runs in the same directory reuse it, other recoveries are
 never touched, and nothing outside the workdir changes. `--show`
@@ -184,7 +196,8 @@ john --show --pot=john.pot --format=ethereum hashes-eth-scrypt.txt
 ```
 
 Use `--format=Bitcoin` for Core mkeys and `--format=ethereum` for both
-Ethereum KDFs. `--pot=john.pot` keeps this recovery's results in a
+Ethereum KDFs. This runbook does not claim a John format for Exodus; use
+Hashcat mode 28200. `--pot=john.pot` keeps this recovery's results in a
 run-local potfile next to the hashes — same contract as hashcat's
 `--potfile-path` above: re-runs in the same directory reuse it, other
 recoveries are never touched. `--show` prints the potfile's passwords.
@@ -234,9 +247,9 @@ step 1.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| findcrypto: `No crack material found` | no exportable record: nothing wallet-shaped, OR a skipped keystore (see stderr: unsupported cipher/KDF, presale) | read stderr first — a skip reason means carving wider will not help; only a bare message means carve wider (`-context`) and retry |
+| findcrypto: `No crack material found` | no exportable record: nothing wallet-shaped, OR an explained skip (unsupported Web3/presale/ERC-2335, or an Exodus container with a valid fixed prefix but a truncated blob/checksum/Hashcat-bound failure) | read stderr first — a valid prefix with a truncated blob may need a wider carve; unsupported formats and checksum mismatch do not; a shorter or structurally damaged Exodus prefix is deliberately indistinguishable from noise |
 | findcrypto: `No token words found` | context holds no 3+ letter/digit runs | feed a bigger carve, or the `hits.jsonl` with carves |
-| hashcat: `Token length exception`, `No hashes loaded` | mixed modes in one file, or a `name:` filename prefix (ethereum2john.py prepends one) | one file per `-m`; strip prefixes (`grep '^\$'` output never has them) |
+| hashcat: `Token length exception`, `No hashes loaded` | mixed modes in one file, a `name:` filename prefix, or an Exodus line accidentally filtered out because it has no `$` | one file per `-m`; use `grep '^\$'` for Core/Ethereum and `grep '^EXODUS:'` for mode 28200 |
 | hashcat: `All hashes found as potfile entries` on a re-run in the same directory | the hashes were already cracked into the run-local `hashcat.pot` | not an error — `--show` still prints them; delete only that run-local file to re-time from scratch (never another recovery's pot) |
 | John: `No password hashes left to crack` on a re-run in the same directory | the hashes were already cracked into the run-local `john.pot` (`--pot` selects the potfile; `--session` only names the session) | not an error — `--show` still prints them; delete only that run-local file to re-time from scratch (never another recovery's pot) |
 | hashcat: `Invalid extra buffer size` (scrypt) | scrypt's buffer exceeds device memory at the default tmto | raise `--scrypt-tmto` (5 fits a CPU; higher = less memory, slower). Some old OpenCL stacks (observed: NVIDIA + hashcat 6.2.6 without CUDA) refuse at any tmto — use a CPU backend (pocl) or John |
@@ -271,25 +284,34 @@ can start; that is a salvage problem (§1), not a cracking problem.
 ## Limitations
 
 - Only standard records export: Core mkey with method 0, 48-byte encrypted
-  key, 8-byte salt; keystores with aes-128-ctr and scrypt / PBKDF2-HMAC-SHA256.
+  key, 8-byte salt; Web3 keystores with aes-128-ctr and scrypt /
+  PBKDF2-HMAC-SHA256; and complete Exodus-attributed SECO v0 containers whose
+  checksum, scrypt parameters, cipher metadata, and fixed padding validate.
   Anything else is skipped with the reason on stderr (exit stays 0)
   instead of emitting a bogus hash — watch stderr, not just stdout.
   Partial mkey patterns are the exception: anything looser than the
   full 66-byte shape would report noise, so near-misses stay silent.
 - Ethereum presale wallets (`encseed`/`bkp` shape) are detected as out of
   scope (a stderr skip line) and not exported.
+- ERC-2335 BLS12-381 keystores (commonly used for validators) are strictly
+  detected and carved, but are reported as a skip because no cracker export is
+  implemented.
 
 ## Verified with
 
-Every `sh` command above ran green on 2026-09-20 via
-`scripts/password-handoff.sh`; the local `scripts/check.sh full` path executes
-the same harness with:
+The Core/Ethereum corpus and every pre-Exodus `sh` command ran green on
+2026-09-20 with hashcat 6.2.6 via `scripts/password-handoff.sh`. On 2026-11-24
+the deterministic Exodus fixture and findcrypto export were byte-for-byte
+checked against Hashcat 8.0.0's official `tools/exodus2hashcat.py`. The harness
+now pins 8.0.0 and includes its live mode-28200 crack in the next
+`scripts/check.sh full` run; that updated full run has not yet been claimed as
+executed. Its required tool set is:
 
 - John the Ripper 1.9.0-jumbo-1 (CPU build from the openwall release
   tarball plus `scripts/john-1.9.0-jumbo-1-gcc13-blake2.patch`, a
   struct-padding fix for GCC ≥ 13 that changes no hashes; full
   banner suffix varies by CPU)
-- hashcat v6.2.6 (pocl CPU backend)
+- hashcat v8.0.0 (pocl CPU backend)
 - btcrecover 1.13.0-Cryptoguide @ 1457088acf17630eb12a5b53989982ac34e55f2a
   (2026-07-17) on Python 3.12
   with eth-keyfile 0.6.0, setuptools 80.9.0 (eth-keyfile still

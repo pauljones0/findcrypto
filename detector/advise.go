@@ -143,6 +143,9 @@ func adviseFollowupOrRaw(path string, fi os.FileInfo, head []byte) (Advice, erro
 		if stores := findKeystores(head, 0); len(stores) > 0 {
 			return adviseHashes(path, fmt.Sprintf("%s: first %d bytes hold a complete Ethereum keystore object at offset %d (address + crypto envelope)", path, len(head), stores[0].startAbs))
 		}
+		if containers := findExodusSECO(head, 0); len(containers) > 0 {
+			return adviseHashes(path, fmt.Sprintf("%s: first %d bytes hold an Exodus SECO container prefix at offset %d (exact header + scrypt/AES-GCM metadata)", path, len(head), containers[0].startAbs))
+		}
 		// Private-only input stays raw: -watch would refuse it,
 		// so routing there strands the target.
 		if pubs, _ := ExtractXpubs(head); len(pubs) > 0 {

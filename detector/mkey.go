@@ -42,17 +42,20 @@ const (
 
 // CrackHash is crack-ready password-recovery material plus its KDF metadata.
 // It carries everything a cracker needs and nothing that decrypts anything
-// on its own.
+// on its own. Depending on the format, that necessarily includes bounded
+// encrypted key bytes; treat it as recovery-sensitive even though it is not
+// plaintext and cannot unlock a wallet without the password.
 type CrackHash struct {
-	// Format is "bitcoin-core-mkey" or "ethereum-keystore".
+	// Format identifies the source wallet artifact (for example
+	// "bitcoin-core-mkey", "ethereum-keystore", or "exodus-seco").
 	Format string `json:"format"`
-	// Hash is the cracker input string ($bitcoin$...), or "" when only
-	// structured params are available.
+	// Hash is the cracker input string ($bitcoin$..., EXODUS:...), or "" when
+	// only structured params are available.
 	Hash string `json:"hash,omitempty"`
 	// KDF names the derivation ("pbkdf2-hmac-sha512", "scrypt", ...).
 	KDF string `json:"kdf"`
-	// Iterations, SaltHex and Method describe the KDF; keystores carry
-	// their fuller parameter set in Params instead.
+	// Iterations, SaltHex and Method describe the KDF; structured artifacts
+	// carry their fuller parameter set in Params instead.
 	Iterations uint32            `json:"iterations,omitempty"`
 	SaltHex    string            `json:"salt_hex,omitempty"`
 	Method     uint32            `json:"method,omitempty"`

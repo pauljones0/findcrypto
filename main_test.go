@@ -94,6 +94,42 @@ func TestSensitiveOutputDoesNotFollowSymlink(t *testing.T) {
 	}
 }
 
+func TestSeedCompletionWorkDedupesAndPrefersRevealWords(t *testing.T) {
+	words := strings.Split("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon xxxx", " ")
+	dets := []detector.Detection{
+		{Target: "carve.bin", Needle: "bip39-12-near-miss", Offset: 42},
+		{Target: "carve.bin", Needle: "bip39-12-near-miss", Offset: 42, Words: words},
+		{Target: "other.bin", Needle: "bip39-unordered", Offset: 9, Words: words},
+		{Target: "ignored.bin", Needle: "wif", Offset: 1},
+	}
+	work, nearMisses, unordered := seedCompletionWork(dets)
+	if len(work) != 2 || nearMisses != 1 || unordered != 1 {
+		t.Fatalf("work=%+v near=%d unordered=%d", work, nearMisses, unordered)
+	}
+	if strings.Join(work[0].Words, " ") != strings.Join(words, " ") {
+		t.Fatalf("duplicate retained wordless detection: %+v", work[0])
+	}
+}
+
+func TestPrepareRecoveryCompletionsCountsActualCandidates(t *testing.T) {
+	words := strings.Split("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon xxxx", " ")
+	work := []detector.Detection{
+		{Target: "wordless", Needle: "bip39-12-near-miss", Offset: 1},
+		{Target: "usable", Needle: "bip39-12-near-miss", Offset: 2, Words: words},
+	}
+	ctx := &seedRecoveryContext{profiles: []string{detector.RecoveryProfileEVM}, count: 1}
+	results, errs, candidates, derivationWork, err := prepareRecoveryCompletions(work, 2, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || len(errs) != 2 || results[0] != nil || results[1] == nil || errs[0] != nil || errs[1] != nil {
+		t.Fatalf("prepared results=%+v errors=%+v", results, errs)
+	}
+	if candidates != 2 || derivationWork != 2 {
+		t.Fatalf("candidates=%d derivation-work=%d, want 2/2", candidates, derivationWork)
+	}
+}
+
 // The module path is the SBOM identity and the go install address: pin it.
 func TestModulePath(t *testing.T) {
 	info, ok := debug.ReadBuildInfo()
@@ -322,13 +358,16 @@ func TestHashCommands(t *testing.T) {
 		{Format: "bitcoin-core-mkey"},
 		{Format: "ethereum-keystore", KDF: "scrypt"},
 		{Format: "ethereum-keystore", KDF: "pbkdf2-hmac-sha256"},
+		{Format: "exodus-seco"},
+		{Format: "exodus-seco"},       // twin dedupes
 		{Format: "bitcoin-core-mkey"}, // twin dedupes
 		{Format: "unknown-thing"},     // ignored
 	})
 	want := []string{
-		"hashcat -m 11300 hashes.txt passwords.txt",
-		"hashcat -m 15700 hashes.txt passwords.txt",
-		"hashcat -m 15600 hashes.txt passwords.txt",
+		"hashcat -m 11300 hashes-core.txt passwords.txt",
+		"hashcat -m 15700 hashes-eth-scrypt.txt passwords.txt",
+		"hashcat -m 15600 hashes-eth-pbkdf2.txt passwords.txt",
+		"hashcat -m 28200 hashes-exodus.txt passwords.txt",
 	}
 	if strings.Join(cmds, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("cmds = %q\nwant %q", cmds, want)

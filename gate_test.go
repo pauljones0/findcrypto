@@ -3,6 +3,8 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1022,6 +1024,157 @@ func TestCompleteCLI(t *testing.T) {
 	assertPrivateOutput(t, addrs)
 }
 
+func TestKnownAddressAndPassphraseCompletionCLI(t *testing.T) {
+	dir := t.TempDir()
+	smudged := writeGateFile(t, dir, "smudged.txt",
+		"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon xxxx\n")
+	raw, err := exec.Command(testBinary, "--reveal", "-json", smudged).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits := writeGateFile(t, dir, "hits.jsonl", string(raw))
+	known := writeGateFile(t, dir, "known.txt", "0x9858effd232b4033e47d90003d41ec34ecaeda94\n")
+
+	stdout, stderr, exit := runTestBinary(t,
+		"-report", hits, "-complete", "--reveal", "-complete-max", "2",
+		"-known-addresses", known, "-recovery-profiles", "evm-standard")
+	if exit != 0 {
+		t.Fatalf("known match exit %d: %s", exit, stderr)
+	}
+	for _, want := range []string{"MATCH hit=1 candidate=1", "profile=evm-standard", "candidate 1: abandon abandon"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("known match lacks %q:\n%s", want, stdout)
+		}
+	}
+	if n := strings.Count(stdout, "  candidate "); n != 1 {
+		t.Errorf("known match revealed %d candidates, want exactly the positive match:\n%s", n, stdout)
+	}
+	if !strings.Contains(stderr, "unmatched candidate phrases will stay hidden") {
+		t.Errorf("stderr lacks privacy notice: %s", stderr)
+	}
+	if !strings.Contains(stderr, "profiles=evm-standard start=0 count=1 passphrase=empty candidates=2") {
+		t.Errorf("stderr lacks auditable recovery assumptions: %s", stderr)
+	}
+
+	duplicates := writeGateFile(t, dir, "duplicate-hits.jsonl", string(raw)+string(raw))
+	stdout, _, exit = runTestBinary(t,
+		"-report", duplicates, "-complete", "--reveal", "-complete-max", "1",
+		"-known-addresses", known, "-recovery-profiles", "evm-standard")
+	if exit != 0 || !strings.Contains(stdout, "1 candidate hits") || strings.Count(stdout, "  candidate ") != 1 {
+		t.Errorf("duplicate completion work was not deduplicated (exit=%d):\n%s", exit, stdout)
+	}
+
+	noMatch := writeGateFile(t, dir, "no-match.txt", "0x0000000000000000000000000000000000000000\n")
+	stdout, _, exit = runTestBinary(t,
+		"-report", hits, "-complete", "--reveal", "-complete-max", "2",
+		"-known-addresses", noMatch, "-recovery-profiles", "evm-standard")
+	if exit != 0 {
+		t.Fatalf("no-match exit %d", exit)
+	}
+	if strings.Contains(stdout, "  candidate 1:") || !strings.Contains(stdout, "inconclusive") ||
+		!strings.Contains(stdout, "checked 2 candidate(s) and 2 derived public address(es)") {
+		t.Errorf("no-match must hide phrases and stay inconclusive:\n%s", stdout)
+	}
+
+	wordlessRaw, err := exec.Command(testBinary, "-json", smudged).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wordlessHits := writeGateFile(t, dir, "wordless-hits.jsonl", string(wordlessRaw))
+	stdout, _, exit = runTestBinary(t,
+		"-report", wordlessHits, "-complete", "--reveal", "-complete-max", "2",
+		"-known-addresses", noMatch, "-recovery-profiles", "evm-standard")
+	if exit != 0 || !strings.Contains(stdout, "no candidate was checked") || strings.Contains(stdout, "no candidate matched") {
+		t.Errorf("wordless completion must distinguish zero checked candidates (exit=%d):\n%s", exit, stdout)
+	}
+
+	bitcoin := writeGateFile(t, dir, "bitcoin.txt", "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA\n")
+	stdout, _, exit = runTestBinary(t,
+		"-report", hits, "-complete", "--reveal", "-complete-max", "1",
+		"-known-addresses", bitcoin, "-recovery-profiles", "bitcoin-standard")
+	if exit != 0 || !strings.Contains(stdout, "chain=bitcoin profile=bitcoin-standard") {
+		t.Errorf("Bitcoin offline match exit=%d:\n%s", exit, stdout)
+	}
+
+	passphrase := filepath.Join(dir, "passphrase.txt")
+	const passphraseValue = "caf\u00e9 wallet shield"
+	if err := os.WriteFile(passphrase, []byte(passphraseValue+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exit = runTestBinary(t,
+		"-report", hits, "-complete", "--reveal", "-complete-max", "1",
+		"-known-addresses", known, "-recovery-profiles", "evm-standard",
+		"-bip39-passphrase-file", passphrase)
+	if runtime.GOOS == "windows" {
+		if exit != 1 || !strings.Contains(stderr, "owner-only DACL") {
+			t.Fatalf("Windows passphrase guard exit=%d stderr=%s", exit, stderr)
+		}
+	} else {
+		if exit != 0 {
+			t.Fatalf("passphrase match exit %d: %s", exit, stderr)
+		}
+		if strings.Contains(stdout, passphraseValue) || strings.Contains(stderr, passphraseValue) || strings.Contains(stdout, "  candidate 1:") {
+			t.Errorf("passphrase run leaked secret or unmatched phrase:\nstdout=%s\nstderr=%s", stdout, stderr)
+		}
+		if !strings.Contains(stderr, "protected file") {
+			t.Errorf("passphrase run lacks protected-source notice: %s", stderr)
+		}
+
+		emptyPassphrase := filepath.Join(dir, "empty-passphrase.txt")
+		if err := os.WriteFile(emptyPassphrase, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, exit = runTestBinary(t,
+			"-report", hits, "-complete", "--reveal", "-complete-max", "1",
+			"-known-addresses", known, "-recovery-profiles", "evm-standard",
+			"-bip39-passphrase-file", emptyPassphrase)
+		if exit != 1 || !strings.Contains(stderr, "passphrase file is empty") {
+			t.Errorf("empty passphrase exit=%d stderr=%s", exit, stderr)
+		}
+	}
+
+	beforeAlias, err := os.ReadFile(passphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, exit = runTestBinary(t,
+		"-report", hits, "-complete", "--reveal", "-complete-max", "1",
+		"-complete-out", passphrase, "-bip39-passphrase-file", passphrase,
+		"-recovery-profiles", "evm-standard")
+	afterAlias, readErr := os.ReadFile(passphrase)
+	if exit != 1 || !strings.Contains(stderr, "aliases input") || readErr != nil || !bytes.Equal(beforeAlias, afterAlias) {
+		t.Errorf("aliased output exit=%d read=%v preserved=%v stderr=%s", exit, readErr, bytes.Equal(beforeAlias, afterAlias), stderr)
+	}
+
+	out := filepath.Join(dir, "identities.txt")
+	_, stderr, exit = runTestBinary(t,
+		"-report", hits, "-complete", "--reveal", "-complete-max", "1",
+		"-complete-out", out, "-recovery-profiles", "evm-standard",
+		"-recovery-start", "1", "-recovery-count", "1")
+	if exit != 0 {
+		t.Fatalf("profile handoff exit %d: %s", exit, stderr)
+	}
+	outRaw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(outRaw), "path=m/44'/60'/0'/0/1") || strings.Contains(string(outRaw), "xpub") {
+		t.Errorf("selected profile/start not honored:\n%s", outRaw)
+	}
+	assertPrivateOutput(t, out)
+
+	for _, args := range [][]string{
+		{"-report", hits, "-complete", "--reveal", "-recovery-count", "2"},
+		{"-report", hits, "-complete", "--reveal", "-known-addresses", known, "-recovery-profiles", "unknown"},
+		{"-report", hits, "-complete", "--reveal", "-known-addresses", known, "-complete-max", "10000", "-recovery-count", "100"},
+	} {
+		_, _, exit := runTestBinary(t, args...)
+		if exit != 2 {
+			t.Errorf("misuse %v exit %d, want 2", args, exit)
+		}
+	}
+}
+
 // The -tokenlist contract (Goal 33): flag misuse exits 2; a context file
 // yields the golden tokenlist on stdout or -tokenlist-out; hits.jsonl
 // with carves reads through to the carve bytes; empty input is a
@@ -1124,6 +1277,17 @@ func TestHashesCLI(t *testing.T) {
 	if strings.Contains(stderr, "skipped") {
 		t.Errorf("happy path must not report skips, got: %s", firstLine(stderr))
 	}
+	// Exodus seed.seco: a checksum-verified SECO container exports the
+	// official mode-28200 line, which deliberately does not start with '$'.
+	exodus := writeGateExodus(t, dir, "seed.seco")
+	stdout, stderr, exit = runTestBinary(t, "-hashes", exodus)
+	if exit != 0 || !strings.Contains(stdout, "EXODUS:16384:8:1:") ||
+		!strings.Contains(stdout, "hashcat -m 28200 hashes-exodus.txt passwords.txt") {
+		t.Errorf("Exodus export: exit %d stdout %q stderr %q", exit, stdout, firstLine(stderr))
+	}
+	if strings.Contains(stderr, "skipped") {
+		t.Errorf("valid Exodus container must not skip: %s", firstLine(stderr))
+	}
 	// Unsupported-but-complete keystore: generic stdout plus a stderr
 	// reason naming the cipher — never silent, never a bogus hash.
 	bad := writeGateFile(t, dir, "cbc.json",
@@ -1166,6 +1330,50 @@ func TestHashesCLI(t *testing.T) {
 	if exit != 1 {
 		t.Errorf("missing file exit %d, want 1", exit)
 	}
+}
+
+func writeGateExodus(t *testing.T, dir, name string) string {
+	t.Helper()
+	header := make([]byte, 224)
+	copy(header, "SECO")
+	pos := 12
+	for _, value := range []string{"seco-v0-scrypt-aes", "Exodus", "26.11.0"} {
+		header[pos] = byte(len(value))
+		pos++
+		copy(header[pos:], value)
+		pos += len(value)
+	}
+	meta := make([]byte, 256)
+	for i := 0; i < 32; i++ {
+		meta[i] = byte(i)
+		meta[104+i] = byte(0xc0 + i)
+	}
+	binary.BigEndian.PutUint32(meta[32:36], 16384)
+	binary.BigEndian.PutUint32(meta[36:40], 8)
+	binary.BigEndian.PutUint32(meta[40:44], 1)
+	copy(meta[44:76], "aes-256-gcm")
+	for i := 0; i < 12; i++ {
+		meta[76+i] = byte(0xa0 + i)
+		meta[136+i] = byte(0xe0 + i)
+	}
+	for i := 0; i < 16; i++ {
+		meta[88+i] = byte(0xb0 + i)
+		meta[148+i] = byte(0xf0 + i)
+	}
+	blob := bytes.Repeat([]byte{0x5a}, 64)
+	length := make([]byte, 4)
+	binary.BigEndian.PutUint32(length, uint32(len(blob)))
+	checkInput := append(append(bytes.Clone(meta), length...), blob...)
+	checksum := sha256.Sum256(checkInput)
+	raw := append(bytes.Clone(header), checksum[:]...)
+	raw = append(raw, meta...)
+	raw = append(raw, length...)
+	raw = append(raw, blob...)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestSalvageOutputPrivate(t *testing.T) {
@@ -1613,7 +1821,7 @@ func TestPasswordRecoveryDocCommands(t *testing.T) {
 	pins := map[string]string{
 		"JOHN_VERSION=":        "1.9.0-jumbo-1",
 		"JOHN_SHA256=":         "8b40499a20fdd66d5f651b439bf9846367182bb93e8bff3fd39ba267576dd317",
-		"HASHCAT_VERSION=":     "6.2.6",
+		"HASHCAT_VERSION=":     "8.0.0",
 		"BTCR_SHA=":            "1457088",
 		"ETH_KEYFILE_VERSION=": "0.6.0",
 		"SETUPTOOLS_VERSION=":  "80.9.0",

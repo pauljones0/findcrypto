@@ -8,7 +8,7 @@ _findbtc_completions()
             COMPREPLY=()
             ;;
         -*)
-            COMPREPLY=( $(compgen -W "-advise -balance-endpoint -baseline -case-log -checkpoint -complete -complete-max -complete-out -context -dfxml -extract-dir -fail-on-hit -fs -fs-offset -gen-completion -gen-man -hashes -json -patch -profile -report -resume -reveal -s -salvage -salvage-out -targets -tokenlist -tokenlist-max -tokenlist-out -unallocated-only -verify-case-log -version -walk -walk-follow-symlinks -walk-maxdepth -watch -watch-count -watch-format -watch-out" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-advise -balance-endpoint -baseline -bip39-passphrase-file -case-log -checkpoint -complete -complete-max -complete-out -context -dfxml -extract-dir -fail-on-hit -fs -fs-offset -gen-completion -gen-man -hashes -json -known-addresses -patch -profile -recovery-count -recovery-profiles -recovery-start -report -resume -reveal -s -salvage -salvage-out -targets -tokenlist -tokenlist-max -tokenlist-out -unallocated-only -verify-case-log -version -walk -walk-follow-symlinks -walk-maxdepth -watch -watch-count -watch-format -watch-out" -- "$cur") )
             ;;
         *)
             COMPREPLY=( $(compgen -f -- "$cur") )
